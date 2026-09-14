@@ -1,0 +1,23 @@
+{
+  "name": "dudeai-sales-agent-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "migrate": "knex --knexfile knexfile.js migrate:latest",
+    "migrate:rollback": "knex --knexfile knexfile.js migrate:rollback",
+    "seed": "knex --knexfile knexfile.js seed:run",
+    "setup": "npm run migrate && npm run seed",
+    "test": "node --test src/lib/*.test.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "dotenv": "^16.4.7",
+    "hono": "^4.6.14",
+    "knex": "^3.1.0",
+    "pg": "^8.13.1"
+  }
+}

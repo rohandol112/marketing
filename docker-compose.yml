@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: dudeai_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dudeai
+      POSTGRES_PASSWORD: dudeai
+      POSTGRES_DB: dudeai
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dudeai"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

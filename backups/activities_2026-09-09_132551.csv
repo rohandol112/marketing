@@ -1,0 +1,4 @@
+id,tenant_id,lead_id,user_id,type,channel,body,outcome,extracted,occurred_at,next_due_at,created_at
+ac_Vb_uNPlUQBmA,tenant_tanz,ld_qV_Avc-NlDhc,us_5vc_WxO77cew,call,,logeed,,,2026-09-09 04:27:42.917+00,,2026-09-09 04:27:42.917+00
+ac_viIzeSfyRl4Y,tenant_tanz,ld_qV_Avc-NlDhc,us_5vc_WxO77cew,call,phone,callled to him,no_answer,"{""outcome"": ""no_answer"", ""summary"": ""The rep called the owner of Soni Jewellers but the note only states that the call was placed. No further conversation details were provided."", ""next_step"": ""Call the business again to reach the decision maker."", ""sentiment"": ""neutral"", ""objections"": [], ""budget_signal"": ""none"", ""buying_signal"": ""cold"", ""suggested_stage"": ""follow_up_1"", ""next_due_in_days"": 2}",2026-09-09 04:28:01.91+00,2026-09-11 04:28:01.907+00,2026-09-09 04:28:01.91+00
+ac_RwKn-2DH6yLg,tenant_tanz,ld_qV_Avc-NlDhc,us_5vc_WxO77cew,call,,call to him ,,,2026-09-09 04:28:09.596+00,,2026-09-09 04:28:09.596+00
