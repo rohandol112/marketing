@@ -203,8 +203,11 @@ and Postgres. Coolify only needs the repo and one env file.
 2. Port **8787**.
 3. Add a **persistent volume** at `/var/lib/postgresql/data`. Without it, a redeploy starts an
    empty database.
-4. Paste `.env.example` into the env editor and fill in the keys. Nothing in it is required —
-   an empty file boots, seeds itself, and runs discovery and AI in mock mode.
+4. Paste `.env.example` into the env editor and fill in the keys. The app boots and seeds itself
+   with an empty file, but set one LLM key: with none, `activeProvider()` falls back to Ollama at
+   `127.0.0.1:11434`, which is not in this image, and every AI call fails. `LLM_PROVIDER=gemini`
+   with a blank `GEMINI_API_KEY` is the honest way to get mock AI. Discovery needs no key —
+   without one it uses OSM or mock per `DISCOVERY_SOURCE`.
 5. Deploy. First boot runs `initdb`, the migrations and the seed; later boots run migrations only.
 
 Set `APP_PASSWORD` before the URL is public. `middleware/context.js` is still a stub — one shared

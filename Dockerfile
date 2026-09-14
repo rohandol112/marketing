@@ -10,14 +10,22 @@
 # stays off - the same image then runs as a stateless web container.
 
 # ---------- 1. build the frontend ----------
+# vite is a devDependency, so this stage must install them whatever NODE_ENV
+# says. Coolify injects every env var as a build ARG unless you untick it, and
+# a leaked NODE_ENV=production turns `npm ci` into a silent omit-dev - the
+# build then dies on `vite: not found`. --include=dev settles it here instead
+# of in a checkbox someone has to remember.
 FROM node:22-alpine AS web
+ENV NODE_ENV=development
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev
 COPY web/ ./
 RUN npm run build
 
 # ---------- 2. install the server's production deps ----------
+# Explicitly omit-dev, for the mirror-image reason: not at the mercy of an
+# injected NODE_ENV either way.
 FROM node:22-alpine AS deps
 WORKDIR /server
 COPY server/package.json server/package-lock.json ./
