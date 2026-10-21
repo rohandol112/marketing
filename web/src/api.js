@@ -71,6 +71,12 @@ export const api = {
   auditLead: (id, psi) => request('/leads/' + id + '/audit' + (psi ? '?pagespeed=true' : ''), { method: 'POST' }),
   markDnc: (id, body) => request('/leads/' + id + '/dnc', { method: 'POST', body }),
   verifyLead: (id, body) => request('/leads/' + id + '/verify', { method: 'POST', body }),
+  enrichMaps: (id) => request('/leads/' + id + '/enrich-maps', { method: 'POST' }),
+  enrichMapsBulk: (body) => request('/leads/enrich-maps', { method: 'POST', body }),
+  enrichInstagram: (id) => request('/leads/' + id + '/enrich-instagram', { method: 'POST' }),
+  setExclusion: (id, body) => request('/leads/' + id + '/exclusion', { method: 'POST', body }),
+  resolveCandidate: (id, field, accept) => request('/leads/' + id + '/candidates/' + field, { method: 'POST', body: { accept } }),
+  refreshStale: () => request('/leads/refresh-stale', { method: 'POST' }),
 
   verifyByResearch: (id) => request('/ai/leads/' + id + '/verify-by-research', { method: 'POST' }),
   research: (id, force) => request('/ai/leads/' + id + '/research' + (force ? '?force=true' : '')),
@@ -99,6 +105,8 @@ export const api = {
   patchPackage: (id, body) => request('/settings/packages/' + id, { method: 'PATCH', body }),
   catalog: () => request('/settings/catalog'),
   patchTenant: (body) => request('/settings/tenant', { method: 'PATCH', body }),
+  maintenance: () => request('/settings/maintenance'),
+  runMaintenance: (body) => request('/settings/maintenance/run', { method: 'POST', body }),
 };
 
 export default api;

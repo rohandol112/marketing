@@ -15,6 +15,8 @@ import { MANUAL_FIELDS } from './leads.js';
 const VERIFY_SENDS = [
   'name', 'phone', 'website', 'address', 'locality',
   'rating', 'review_count', 'ig_followers', 'years_in_business',
+  // fast verify's "I looked, there is no website"
+  'website_status',
 ];
 
 test('every field the verification flow sends is actually editable', () => {

@@ -20,6 +20,10 @@ export default function Discovery() {
   const [minReviews, setMinReviews] = useState(0);
   const [maxPages, setMaxPages] = useState(app.modes.maxPages || 3);
   const [source, setSource] = useState(app.modes.discoverySource);
+  // Directory sources carry no review count - the whole demand score - so each
+  // new lead can be looked up on Google Maps after the sweep.
+  const [enrichMaps, setEnrichMaps] = useState(app.modes.mapsEnrichOnDiscovery !== false);
+  const canEnrich = app.modes.mapsLookup && (source === 'osm' || source === 'gemini');
   const [estimate, setEstimate] = useState(null);
   const [starting, setStarting] = useState(false);
   const [runs, setRuns] = useState([]);
@@ -128,6 +132,7 @@ export default function Discovery() {
         minReviews: Number(minReviews) || 0,
         maxPages,
         source,
+        enrichMaps: canEnrich ? enrichMaps : false,
       });
       setActiveRun(run);
       loadRuns();
@@ -300,9 +305,24 @@ export default function Discovery() {
                 />
               </div>
 
+              {canEnrich && (
+                <label className="row small" style={{ gap: 8, marginBottom: 10, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={enrichMaps}
+                    onChange={(e) => setEnrichMaps(e.target.checked)}
+                    style={{ width: 'auto' }}
+                  />
+                  <span>
+                    Look up Google reviews, rating and phone for each new lead
+                    <span className="faint"> - one Maps lookup per lead, high-value categories first</span>
+                  </span>
+                </label>
+              )}
+
               <div className="field-row">
                 <div className="field">
-                  <label title="Businesses below this never enter the queue">Minimum reviews</label>
+                  <label title="Businesses known to be below this never enter the queue. Unknown counts are kept.">Minimum reviews</label>
                   <input type="number" min="0" value={minReviews} onChange={(e) => setMinReviews(e.target.value)} />
                 </div>
                 <div className="field">
@@ -385,11 +405,13 @@ export default function Discovery() {
           <div>
             <div className="stat-label">Estimated cost</div>
             <div className="stat-value">
-              {source === 'places' ? '$' + (estimate?.costUsd ?? 0).toFixed(2) : source === 'gemini' ? 'Tokens' : 'Free'}
+              {source === 'places' ? '$' + (estimate?.costUsd ?? 0).toFixed(2) : source === 'gemini' || source === 'maps' ? 'Tokens' : 'Free'}
             </div>
             <div className="stat-note">
               {source === 'places' ? estimate?.tier + ' tier'
                 : source === 'gemini' ? 'about 650 tokens per category'
+                : source === 'maps' ? maxPages + ' grounded lookups per category'
+                : canEnrich && enrichMaps ? 'sweep free; one Maps lookup per new lead'
                 : 'no key, no quota'}
             </div>
           </div>
@@ -424,6 +446,14 @@ export default function Discovery() {
               <span className="badge a">{activeRun.new_count} new</span>
               <span className="badge">{activeRun.dupe_count} duplicates skipped</span>
               <span className="badge">{activeRun.found_count} seen</span>
+              {activeRun.params?.excluded > 0 && (
+                <span className="badge red" title="Chains, government bodies and placeholder listings - in the Rejected queue with the reason">
+                  {activeRun.params.excluded} not prospects
+                </span>
+              )}
+              {activeRun.params?.enrichQueued > 0 && (
+                <span className="badge blue">{activeRun.params.enrichQueued} Maps lookups queued</span>
+              )}
               {Number(activeRun.cost_usd) > 0 && (
                 <span className="badge">${Number(activeRun.cost_usd).toFixed(2)} spent</span>
               )}

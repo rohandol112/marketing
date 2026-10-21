@@ -1,4 +1,6 @@
 import { tierOf, isInSeason } from './categories.js';
+import { asObject, daysSince } from './util.js';
+import { EXCLUSION_LABELS } from './classify.js';
 
 /**
  * Deterministic lead scoring. No LLM anywhere in this file, on purpose.
@@ -50,6 +52,20 @@ export const DEFAULT_SCORING_CONFIG = {
     noMetaDescription: 3,
     staleContent: { years: 2, points: 4 },
     thinContent: 3,
+
+    // Read off the page by the v2 auditor. A site audited before these existed
+    // has no evidence either way, and unknown scores nothing.
+    noTracking: 5,              // no analytics, tag manager or pixel at all
+    noRetargeting: 2,           // measures visits, cannot retarget them
+    noConversionPath: 4,        // no form, WhatsApp, click-to-call, booking or chat
+    noindex: 8,                 // the site tells Google not to list it
+    sslInvalid: 5,              // expired or wrong certificate: a full-page browser warning
+    outdatedTech: 3,            // Flash, 1990s markup, jQuery 1.x, WordPress 5
+    noLocalSchema: 2,
+    lowSeoScore: { max: 70, points: 3 },                  // Google's own PageSpeed SEO audit
+    lowRating: { max: 3.9, minReviews: 30, points: 5 },   // reputation management is the sale
+    dormantInstagram: { days: 60, points: 5 },
+    adsAlreadyRunning: -4,      // ads tag or pixel: someone is probably already doing this
   },
 
   affordability: {
@@ -62,6 +78,7 @@ export const DEFAULT_SCORING_CONFIG = {
     max: 10,
     newOutlet: { days: 90, points: 10 },
     hiringMarketing: 6,
+    newOpening: 5,
     inSeason: 4,
   },
 
@@ -71,7 +88,8 @@ export const DEFAULT_SCORING_CONFIG = {
     minReviews: 20,
     requireOperational: true,
     excludeAgencyManaged: true,
-    excludeFranchiseHq: true,
+    excludeFranchiseHq: true,   // chain and franchise outlets: marketing is bought centrally
+    excludeGovernment: true,    // government and non-commercial bodies are not buyers
   },
 };
 
@@ -109,6 +127,10 @@ function award(b, points, label, detail) {
   b.signals.push({ label, points: round(points), detail: detail || null });
 }
 
+function note(b, label, detail) {
+  b.signals.push({ label, points: 0, detail: detail || null });
+}
+
 function capBucket(b) {
   if (b.points > b.max) {
     b.signals.push({ label: 'Capped at ' + b.max, points: round(b.max - b.points), detail: null });
@@ -132,6 +154,8 @@ export function scoreLead(lead, cfg = DEFAULT_SCORING_CONFIG, ctx = {}) {
   const igF = numOrNull(lead.ig_followers);
   const liF = numOrNull(lead.li_followers);
   const catId = lead.normalized_category;
+  const audit = asObject(lead.website_audit);
+  const v2 = Number(audit.v) >= 2;
 
   // ---------------- disqualifiers ----------------
   const dq = [];
@@ -143,6 +167,15 @@ export function scoreLead(lead, cfg = DEFAULT_SCORING_CONFIG, ctx = {}) {
   }
   if (c.disqualify.excludeAgencyManaged && lead.agency_managed === true) {
     dq.push('Already has an agency');
+  }
+  // A person can clear an exclusion by setting it to 'none'. The detectors
+  // never overwrite that, so the same false positive cannot come back.
+  const exclusion = lead.exclusion && lead.exclusion !== 'none' ? lead.exclusion : null;
+  if (exclusion) {
+    const switchedOff =
+      (exclusion === 'chain' && !c.disqualify.excludeFranchiseHq) ||
+      ((exclusion === 'government' || exclusion === 'non_commercial') && !c.disqualify.excludeGovernment);
+    if (!switchedOff) dq.push(lead.exclusion_reason || EXCLUSION_LABELS[exclusion] || exclusion);
   }
 
   // ---------------- DEMAND ----------------
@@ -171,35 +204,49 @@ export function scoreLead(lead, cfg = DEFAULT_SCORING_CONFIG, ctx = {}) {
   // ---------------- DIGITAL GAP ----------------
   const digital = bucket('Digital gap', c.digital.max);
   const ws = lead.website_status;
-  const audit = lead.website_audit || {};
 
   if (ws === 'unknown') {
     // Not "they have no website" - "nobody has checked". Scoring these the same
     // was the single biggest source of false positives in the whole product.
-    digital.signals.push({
-      label: 'Website not checked yet',
-      points: 0,
-      detail: 'The directory does not record one. Confirm on Maps or search before assuming there is none.',
-    });
+    note(digital, 'Website not checked yet', 'The directory does not record one. Confirm on Maps or search before assuming there is none.');
+  } else if (ws === 'protected') {
+    note(digital, 'Site blocks automated checks', 'It is up, but nothing about its content can be claimed until someone opens it.');
   } else if (!lead.website || ws === 'none') {
     award(digital, c.digital.noWebsite, 'No website at all', 'The single easiest thing to sell');
   } else if (ws === 'social_only') {
+    const host = String(audit.socialOnlyHost || 'social');
     award(
       digital,
       c.digital.socialAsWebsite,
-      'Their website is a ' + (audit.socialOnlyHost || 'social').split('.')[0] + ' page',
+      audit.platformKind === 'google'
+        ? 'Their website is a dead Google Business Profile link'
+        : 'Their website is a ' + host.split('.')[0] + ' page',
       'They have an audience somewhere and own nothing - the clearest possible pitch'
     );
   } else if (ws === 'placeholder' || ws === 'parked') {
-    award(digital, c.digital.placeholderSite, 'Placeholder or parked site', 'Template defaults still on the page');
+    award(
+      digital,
+      c.digital.placeholderSite,
+      ws === 'parked' ? 'Domain parked, for sale or suspended' : 'Placeholder or unfinished site',
+      audit.placeholderReason || (audit.signals && audit.signals[0]) || 'Template defaults still on the page'
+    );
   } else if (ws === 'broken') {
-    award(digital, c.digital.brokenSite, 'Site is broken or unreachable', 'Paying for a domain that does nothing');
+    award(digital, c.digital.brokenSite, 'Site is broken or unreachable', audit.error || 'Paying for a domain that does nothing');
   } else {
-    if (lead.has_https === false) award(digital, c.digital.noHttps, 'No HTTPS', 'Browsers now flag this to their customers');
+    const tlsBad = audit.tls && audit.tls.valid === false && audit.tls.customerVisible;
+    if (tlsBad) {
+      award(digital, c.digital.sslInvalid, 'SSL certificate is invalid', 'Browsers show a full-page security warning before the site loads');
+    } else if (lead.has_https === false) {
+      award(digital, c.digital.noHttps, 'No HTTPS', 'Browsers now flag this to their customers');
+    }
     if (lead.mobile_friendly === false) award(digital, c.digital.notMobileFriendly, 'Not mobile responsive', 'Most of their traffic is a phone');
     const psi = numOrNull(lead.psi_mobile);
     if (psi !== null && psi < c.digital.slowMobile.maxPsi) {
       award(digital, c.digital.slowMobile.points, 'Mobile PageSpeed ' + psi, 'Slow enough to lose the visit');
+    }
+    const seoScore = numOrNull(audit.psi && audit.psi.seo);
+    if (seoScore !== null && seoScore < c.digital.lowSeoScore.max) {
+      award(digital, c.digital.lowSeoScore.points, 'Google scores their SEO ' + seoScore + '/100', "Google's own audit, a number they can check themselves");
     }
 
     // A live site that links to no social account anywhere is the same story as
@@ -213,9 +260,50 @@ export function scoreLead(lead, cfg = DEFAULT_SCORING_CONFIG, ctx = {}) {
     if (audit.copyrightYear && at.getFullYear() - audit.copyrightYear >= c.digital.staleContent.years) {
       award(digital, c.digital.staleContent.points, 'Site untouched since ' + audit.copyrightYear, 'Nobody has looked at it in years');
     }
-    if (audit.textLength != null && audit.textLength < 400) {
+    if (!audit.spa && audit.textLength != null && audit.textLength < 400) {
       award(digital, c.digital.thinContent, 'Almost no content on the page', 'Nothing for search or a customer to read');
     }
+
+    if (v2) {
+      const t = audit.tracking || null;
+      if (audit.seo && audit.seo.noindex) {
+        award(digital, c.digital.noindex, 'Site is hidden from Google', 'A robots noindex tag tells Google not to list it - it cannot rank for anything');
+      }
+      if (t && !t.any) {
+        award(digital, c.digital.noTracking, 'No analytics or ad tracking', 'They cannot see where a single customer comes from');
+      } else if (t && t.universalAnalytics && !t.analytics && !t.adTracking) {
+        award(digital, c.digital.noTracking, 'Only dead Universal Analytics', 'Google switched it off - nothing has been measured since');
+      } else if (t && t.analytics && !t.adTracking) {
+        award(digital, c.digital.noRetargeting, 'No retargeting pixel', 'Every visitor who leaves is gone for good');
+      }
+      if (audit.conversion && !audit.conversion.any) {
+        award(digital, c.digital.noConversionPath, 'No way to enquire on the site', 'No form, WhatsApp button, click-to-call or booking');
+      }
+      if (audit.tech && Array.isArray(audit.tech.outdated) && audit.tech.outdated.length) {
+        award(digital, c.digital.outdatedTech, 'Outdated technology', audit.tech.outdated.join(', '));
+      }
+      if (audit.seo && !audit.seo.localSchema) {
+        award(digital, c.digital.noLocalSchema, 'No local business schema', 'Google cannot read their address, hours or category from the site');
+      }
+      if (t && (t.googleAds || t.metaPixel)) {
+        award(
+          digital,
+          c.digital.adsAlreadyRunning,
+          'Ad tracking already installed',
+          [t.googleAds && 'Google Ads tag', t.metaPixel && 'Meta pixel'].filter(Boolean).join(' and ') + ' found - someone may already run their ads'
+        );
+      }
+    }
+  }
+
+  // Reputation is a digital sale in its own right, whatever the website.
+  if (rating !== null && reviews !== null && reviews >= c.digital.lowRating.minReviews && rating <= c.digital.lowRating.max) {
+    award(
+      digital,
+      c.digital.lowRating.points,
+      rating.toFixed(1) + ' stars across ' + reviews.toLocaleString() + ' reviews',
+      'The rating is costing them customers - reputation management is the pitch'
+    );
   }
 
   // The ratio that matters most: lots of real customers, almost no followers.
@@ -233,6 +321,15 @@ export function scoreLead(lead, cfg = DEFAULT_SCORING_CONFIG, ctx = {}) {
   }
   if (igF !== null && igF < c.digital.lowInstagram.max) {
     award(digital, c.digital.lowInstagram.points, 'Instagram under ' + c.digital.lowInstagram.max, igF.toLocaleString() + ' followers');
+  }
+  const ig = asObject(lead.social_audit).instagram;
+  if (ig && ig.found) {
+    const quiet = daysSince(ig.lastPostAt, at.getTime());
+    if (Number(ig.mediaCount) === 0) {
+      award(digital, c.digital.dormantInstagram.points, 'Instagram account with no posts', 'They claimed the handle and never used it');
+    } else if (quiet !== null && quiet > c.digital.dormantInstagram.days) {
+      award(digital, c.digital.dormantInstagram.points, 'No Instagram post in ' + quiet + ' days', 'They have the account and stopped feeding it');
+    }
   }
   if (liF !== null && liF < c.digital.lowLinkedin.max) {
     award(digital, c.digital.lowLinkedin.points, 'LinkedIn barely used', liF.toLocaleString() + ' followers');
@@ -259,8 +356,10 @@ export function scoreLead(lead, cfg = DEFAULT_SCORING_CONFIG, ctx = {}) {
   const trigger = bucket('Trigger', c.trigger.max);
   if (lead.new_outlet_days != null && lead.new_outlet_days <= c.trigger.newOutlet.days) {
     award(trigger, c.trigger.newOutlet.points, 'Opened a new outlet ' + lead.new_outlet_days + ' days ago', 'Best possible moment to call');
+  } else if (audit.newOpening === true) {
+    award(trigger, c.trigger.newOpening, 'Their site announces a new opening', 'New premises need customers fast');
   }
-  if (lead.hiring_marketing === true) {
+  if (lead.hiring_marketing === true || audit.hiringMarketing === true) {
     award(trigger, c.trigger.hiringMarketing, 'Hiring for marketing', 'They already decided they have a problem');
   }
   if (catId && isInSeason(catId, at)) {

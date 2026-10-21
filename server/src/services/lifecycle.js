@@ -1,5 +1,7 @@
 import { scoreLead } from '../lib/scoring.js';
 import { computeConfidence, DEFAULT_CONFIDENCE_CONFIG } from '../lib/confidence.js';
+import { dealScore } from '../lib/deal.js';
+import { asObject } from '../lib/util.js';
 
 /**
  * The discovery lifecycle. Deliberately separate from the sales pipeline.
@@ -50,7 +52,7 @@ const DIRECTORY_SOURCES = new Set(['openstreetmap', 'google_places', 'gemini_gro
 export function hasVerifiedIdentity(lead) {
   if (lead.google_place_id) return true;
   if (lead.external_source && DIRECTORY_SOURCES.has(lead.external_source)) return true;
-  const prov = lead.field_provenance || lead.source_url || {};
+  const prov = asObject(lead.field_provenance || lead.source_url);
   return Boolean(lead.verified_at || prov.verification);
 }
 
@@ -67,8 +69,18 @@ export function evaluate(lead, scoringCfg, confidenceCfg = DEFAULT_CONFIDENCE_CO
 
   let discovery_status;
   let reason = null;
+  let humanRejected = false;
 
-  if (scored.disqualified) {
+  if (lead.status === 'rejected') {
+    // A person's "no" is final. Rescoring used to recompute this from the data
+    // alone, so a weight change quietly resurrected leads someone had rejected
+    // or confirmed did not exist.
+    humanRejected = true;
+    discovery_status = 'rejected';
+    reason = /^(A person|Rejected|On the do-not-contact)/.test(lead.disqualify_reason || '')
+      ? lead.disqualify_reason
+      : 'Rejected in review';
+  } else if (scored.disqualified) {
     discovery_status = 'rejected';
     reason = scored.disqualifyReason;
   } else if (!identity) {
@@ -91,15 +103,39 @@ export function evaluate(lead, scoringCfg, confidenceCfg = DEFAULT_CONFIDENCE_CO
     discovery_status = 'verifying';
   }
 
+  // Once a rep is working a lead, the sales pipeline owns it. A weight change,
+  // a re-audit or a new exclusion rule used to drop a live deal below a floor,
+  // and clearing its stage pulled it off somebody's board mid-conversation.
+  // The concern travels with it as a warning; closing it stays a person's call.
+  const inPipeline = lead.status === 'approved' && lead.stage != null;
+  let pipelineWarning = null;
+  if (inPipeline && !humanRejected && discovery_status !== 'qualified') {
+    pipelineWarning = scored.disqualified ? scored.disqualifyReason : reason;
+    discovery_status = 'qualified';
+  }
+
+  const deal = dealScore(lead, scored, conf);
+
+  let disqualified = humanRejected || scored.disqualified;
+  let disqualifyReason = humanRejected ? reason : scored.disqualified ? scored.disqualifyReason : reason;
+  if (pipelineWarning) {
+    disqualified = false;
+    disqualifyReason = 'In the pipeline, but: ' + pipelineWarning;
+  } else if (discovery_status === 'qualified' && !disqualified) {
+    disqualifyReason = null;
+  }
+
   return {
     score: scored.score,
     tier: scored.tier,
-    score_breakdown: scored.breakdown,
-    disqualified: scored.disqualified,
-    disqualify_reason: scored.disqualified ? scored.disqualifyReason : reason,
+    score_breakdown: { ...scored.breakdown, deal },
+    disqualified,
+    disqualify_reason: disqualifyReason,
     confidence: conf.confidence,
     confidence_breakdown: conf.breakdown,
     discovery_status,
+    deal_score: deal.score,
+    deal,
     assignable: conf.assignable && discovery_status === 'qualified',
   };
 }
@@ -116,6 +152,7 @@ export function evaluationPatch(lead, scoringCfg, confidenceCfg) {
     confidence: e.confidence,
     confidence_breakdown: JSON.stringify(e.confidence_breakdown),
     discovery_status: e.discovery_status,
+    deal_score: e.deal_score,
   };
   // The CHECK constraint will reject a stage on a lead that is no longer
   // qualified and approved, so clear it here rather than letting the write fail.

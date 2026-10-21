@@ -39,7 +39,11 @@ export function registerHandler(kind, fn) {
 export const PRIORITY = {
   discovery: 10,
   rescore_tenant: 50,
+  enrich_maps: 160,
+  enrich_instagram: 170,
+  geocode_lead: 180,
   audit_lead: 200,
+  maintenance: 250,
 };
 
 export async function enqueue({ tenantId, kind, payload, priority }) {

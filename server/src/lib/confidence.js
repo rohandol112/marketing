@@ -1,3 +1,5 @@
+import { asObject, daysSince } from './util.js';
+
 /**
  * Data confidence: how much of this record is actually evidenced.
  *
@@ -44,7 +46,7 @@ export function computeConfidence(lead, cfg = DEFAULT_CONFIDENCE_CONFIG) {
   // weights added in a later release.
   const w = { ...DEFAULT_CONFIDENCE_CONFIG.weights, ...(cfg.weights || {}) };
   const levels = { ...DEFAULT_CONFIDENCE_CONFIG.levels, ...(cfg.levels || {}) };
-  const prov = lead.field_provenance || {};
+  const prov = asObject(lead.field_provenance);
 
   const out = { points: 0, signals: [], missing: [] };
 
@@ -93,21 +95,36 @@ export function computeConfidence(lead, cfg = DEFAULT_CONFIDENCE_CONFIG) {
   } else if (lead.business_status) {
     miss(out, 'Business status is ' + lead.business_status, w.operational);
   } else {
-    miss(out, 'Trading status unknown', w.operational);
+    // No directory has said they are trading, but recent activity is evidence
+    // they are. Without this, "trading status unknown" held 1,640 directory
+    // leads below the floor whatever else was known about them.
+    const active = recentActivity(lead);
+    if (active) {
+      const pts = Math.round(w.operational * 0.6);
+      add(out, pts, 'Recently active', active);
+      miss(out, 'Trading status not confirmed by a directory', w.operational - pts);
+    } else {
+      miss(out, 'Trading status unknown', w.operational);
+    }
   }
 
   if (lead.phone_normalized) {
     const src = prov.phone?.method || prov.phone?.source;
-    add(out, w.phone, 'Phone on record', src ? 'via ' + src : null);
+    add(out, w.phone, lead.phone_type === 'mobile' ? 'Mobile number on record' : 'Phone on record', src ? 'via ' + src : null);
+  } else if (lead.phone) {
+    // A number that cannot be dialled is not evidence of anything.
+    miss(out, 'Phone on record looks invalid', w.phone);
   } else {
     miss(out, 'No phone number', w.phone);
   }
 
   // Only counts if the auditor actually reached it. A URL nobody has fetched is
   // a claim, not evidence.
-  const siteResolved = lead.website && ['ok', 'placeholder', 'parked'].includes(lead.website_status);
+  const siteResolved = lead.website && ['ok', 'placeholder', 'parked', 'protected'].includes(lead.website_status);
   if (siteResolved) {
     add(out, w.websiteResolves, 'Website responds', 'We fetched it, it is real');
+  } else if (lead.website && lead.website_status === 'social_only') {
+    add(out, w.websiteResolves, 'Website checked', 'It is a social or directory page - they own no site');
   } else if (lead.website && lead.website_status === 'broken') {
     miss(out, 'Website on record does not respond', w.websiteResolves);
   } else if (lead.website) {
@@ -131,7 +148,8 @@ export function computeConfidence(lead, cfg = DEFAULT_CONFIDENCE_CONFIG) {
     miss(out, 'No rating or review count', w.ratingAndReviews);
   }
 
-  const social = lead.ig_handle || lead.ig_followers != null || lead.li_followers != null;
+  const social = lead.ig_handle || lead.ig_followers != null || lead.li_followers != null ||
+    Boolean(asObject(lead.social_audit).instagram);
   if (social) add(out, w.socialVerified, 'Social presence checked');
   else miss(out, 'Social accounts not checked', w.socialVerified);
 
@@ -165,6 +183,32 @@ export function computeConfidence(lead, cfg = DEFAULT_CONFIDENCE_CONFIG) {
       computedAt: new Date().toISOString(),
     },
   };
+}
+
+/**
+ * Evidence the business is still trading when no directory says so: its own
+ * site updated recently, a recent Instagram post, a recent OpenStreetMap survey.
+ * Years scraped from body text are not used - "Since 2025" and a phone number
+ * fragment look the same.
+ */
+function recentActivity(lead, at = Date.now()) {
+  const thisYear = new Date(at).getFullYear();
+  const audit = asObject(lead.website_audit);
+  if (lead.website_status === 'ok') {
+    if (audit.copyrightYear && audit.copyrightYear >= thisYear - 1) return 'their website is current to ' + audit.copyrightYear;
+    const published = daysSince(audit.freshness && audit.freshness.lastPublished, at);
+    if (published !== null && published <= 365) return 'their website was updated ' + published + ' days ago';
+  }
+  const ig = asObject(lead.social_audit).instagram;
+  if (ig && ig.found) {
+    const quiet = daysSince(ig.lastPostAt, at);
+    if (quiet !== null && quiet <= 90) return 'posted on Instagram ' + quiet + ' days ago';
+  }
+  const src = asObject(lead.source_url);
+  const surveyed = src.osm && src.osm.checkDate;
+  const age = daysSince(surveyed, at);
+  if (age !== null && age <= 730) return 'surveyed on OpenStreetMap in ' + String(surveyed).slice(0, 7);
+  return null;
 }
 
 /** The shortest path to a usable lead: what to fill in first. */

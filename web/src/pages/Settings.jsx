@@ -120,6 +120,30 @@ function Scoring() {
         </div>
 
         <div className="card">
+          <h2>Signals read off their site, Maps and Instagram</h2>
+          <div className="field-row">
+            <Num path={['digital', 'noTracking']} label="No analytics at all" hint="No analytics, tag manager or pixel - they measure nothing" />
+            <Num path={['digital', 'noConversionPath']} label="No way to enquire" hint="No form, WhatsApp, click-to-call, booking or chat" />
+          </div>
+          <div className="field-row">
+            <Num path={['digital', 'noindex']} label="Hidden from Google" hint="robots noindex on the homepage" />
+            <Num path={['digital', 'sslInvalid']} label="Invalid SSL" hint="Browsers show a security warning" />
+          </div>
+          <div className="field-row">
+            <Num path={['digital', 'outdatedTech']} label="Outdated tech" />
+            <Num path={['digital', 'adsAlreadyRunning']} label="Ads already running" hint="Negative: an ads tag or pixel means someone may already do this" />
+          </div>
+          <div className="field-row">
+            <Num path={['digital', 'lowRating', 'max']} label="Low rating at or below" />
+            <Num path={['digital', 'lowRating', 'points']} label="Low rating points" hint="Reputation management is the sale" />
+          </div>
+          <div className="field-row">
+            <Num path={['digital', 'dormantInstagram', 'days']} label="Instagram dormant after (days)" />
+            <Num path={['digital', 'dormantInstagram', 'points']} label="Dormant Instagram points" />
+          </div>
+        </div>
+
+        <div className="card">
           <h2>Affordability — what the category is worth</h2>
           <div className="field-row">
             <Num path={['affordability', 'tierPoints', 'T1']} label="T1 high ticket" />
@@ -353,6 +377,128 @@ function Services() {
   );
 }
 
+/* ---------------- data cleanup ---------------- */
+
+const HOUSEKEEP_LABEL = {
+  finishedJobs: 'finished background jobs',
+  failedJobs: 'old failed jobs',
+  usageRows: 'old usage rows',
+  aiCache: 'unused AI drafts',
+  aiSuperseded: 'superseded AI drafts',
+  orphanedRuns: 'stuck sweeps closed',
+  emptyRuns: 'empty sweeps removed',
+  rejectedLeads: 'old rejected leads purged',
+  candidates: 'stale found values cleared',
+  danglingRunIds: 'broken sweep links fixed',
+  dncNormalised: 'do-not-contact numbers fixed',
+  dncDuplicates: 'duplicate do-not-contact rows',
+  oldMaintenanceRuns: 'old cleanup reports',
+};
+
+function CleanupReport({ report }) {
+  const s = report.steps || {};
+  const housekeeping = Object.entries(s.housekeep || {}).filter(([, n]) => Number(n) > 0);
+  return (
+    <div className="small" style={{ marginTop: 10 }}>
+      <div className="kv">
+        <dt>Fields fixed</dt><dd>{s.normalise?.changed ?? 0} leads ({Object.entries(s.normalise?.fields || {}).map(([k, n]) => k + ' ' + n).join(', ') || 'nothing'})</dd>
+        <dt>Re-categorised</dt><dd>{s.reclassify?.changed ?? 0}</dd>
+        <dt>Not prospects</dt><dd>{s.exclude?.flagged ?? 0} {Object.keys(s.exclude?.byKind || {}).length ? '(' + Object.entries(s.exclude.byKind).map(([k, n]) => n + ' ' + k).join(', ') + ')' : ''}</dd>
+        <dt>Duplicates merged</dt><dd>{s.merge?.merged ?? 0}{s.merge?.needsReview ? ' · ' + s.merge.needsReview + ' left for a person' : ''}</dd>
+        <dt>Housekeeping</dt><dd>{housekeeping.map(([k, n]) => n + ' ' + (HOUSEKEEP_LABEL[k] || k)).join(', ') || 'nothing to do'}</dd>
+        <dt>After</dt><dd>{s.rescore?.qualified ?? '?'} qualified · {s.rescore?.hot ?? '?'} hot · {s.rescore?.warm ?? '?'} warm</dd>
+        <dt>Leads</dt><dd>{report.totals?.leadsBefore} → {report.totals?.leadsAfter}</dd>
+      </div>
+      {(s.merge?.samples || []).slice(0, 5).map((m, i) => (
+        <div key={'m' + i} className="gap-line">Kept "{m.kept.name}", merged {m.removed.map((r) => '"' + r.name + '"').join(', ')} - {m.why.join(', ')}</div>
+      ))}
+      {(s.exclude?.samples || []).slice(0, 5).map((x, i) => (
+        <div key={'x' + i} className="gap-line">{x.name}: {x.reason}</div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The cleanup that keeps the lead table worth trusting. Runs on its own every
+ * day; this shows what it did, previews what it would do, and runs it now.
+ */
+function Maintenance() {
+  const toast = useToast();
+  const [state, setState] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(null);
+
+  const load = () => api.maintenance().then(setState).catch(toast.error);
+  useEffect(() => { load(); }, []);
+
+  // Poll while a cleanup is queued or running.
+  useEffect(() => {
+    if (!state?.pending && state?.runs?.[0]?.status !== 'running') return;
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [state]);
+
+  const runPreview = async () => {
+    setBusy('preview');
+    try { setPreview(await api.runMaintenance({ dryRun: true })); }
+    catch (e) { toast.error(e); } finally { setBusy(null); }
+  };
+
+  const runNow = async () => {
+    setBusy('run');
+    try {
+      const r = await api.runMaintenance({ dryRun: false });
+      toast.success(r.queued ? 'Cleanup queued - it runs in the background.' : r.note);
+      setPreview(null);
+      await load();
+    } catch (e) { toast.error(e); } finally { setBusy(null); }
+  };
+
+  const last = state?.runs?.find((r) => !r.dry_run);
+
+  return (
+    <div className="card">
+      <h2>Data cleanup</h2>
+      <div className="small muted" style={{ marginBottom: 8 }}>
+        Fixes phone numbers and websites, re-files miscategorised businesses, marks chains and government bodies,
+        merges duplicates (keeping their history), clears old jobs and AI drafts, and rescores everything.
+        Nothing a person decided is undone, and leads a rep is working are never merged or removed.
+      </div>
+      {!state ? <span className="spinner" /> : (
+        <>
+          <div className="kv small">
+            <dt>Schedule</dt>
+            <dd>{state.auto ? 'every ' + state.intervalHours + ' hours' : 'off (MAINTENANCE_AUTO=false)'}</dd>
+            <dt>Last run</dt>
+            <dd>
+              {last ? new Date(last.started_at).toLocaleString() + ' · ' + last.status + (last.trigger ? ' (' + last.trigger + ')' : '') : 'never'}
+              {state.pending && <span className="badge b" style={{ marginLeft: 6 }}>{state.pending.status}</span>}
+            </dd>
+            <dt>Kept for</dt>
+            <dd>
+              jobs {state.retention.finishedJobsDays}d · AI drafts {state.retention.unusedAiDays}d · rejected leads{' '}
+              {state.retention.rejectedLeadsDays}d · usage {state.retention.usageDays}d
+            </dd>
+          </div>
+          {last?.status === 'failed' && <div className="callout bad" style={{ marginTop: 8 }}>{last.error}</div>}
+          {last?.status === 'done' && last.report && !preview && <CleanupReport report={last.report} />}
+          {preview && (
+            <div className="callout info" style={{ marginTop: 10 }}>
+              <strong>Preview - nothing has been changed yet.</strong>
+              <CleanupReport report={preview} />
+            </div>
+          )}
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="btn sm" onClick={runPreview} disabled={!!busy}>{busy === 'preview' ? 'Working it out...' : 'Preview cleanup'}</button>
+            <button className="btn sm primary" onClick={runNow} disabled={!!busy || !!state.pending}>{busy === 'run' ? 'Queuing...' : 'Run cleanup now'}</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- system ---------------- */
 
 function System() {
@@ -412,6 +558,24 @@ function System() {
             <dt>PageSpeed</dt>
             <dd>{health.pagespeed.configured ? <span className="badge a">on</span> : <span className="badge">off</span>}</dd>
 
+            <dt>Google Maps lookup</dt>
+            <dd>
+              {health.mapsLookup?.configured ? <span className="badge a">on</span> : <span className="badge">off</span>}
+              <div className="small faint" style={{ marginTop: 4 }}>
+                Fills in review counts, ratings, phones and trading status for directory leads. Needs the Gemini
+                provider with a working GEMINI_API_KEY (a Google AI Studio key, starting "AIza").
+              </div>
+            </dd>
+
+            <dt>Instagram</dt>
+            <dd>
+              {health.instagram?.configured ? <span className="badge a">on</span> : <span className="badge">off</span>}
+              <div className="small faint" style={{ marginTop: 4 }}>
+                Followers, posts and last-post date from Instagram's own Business Discovery API. Set
+                META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID to switch it on.
+              </div>
+            </dd>
+
             <dt>Worker</dt>
             <dd>
               <span className={'badge ' + (health.queue.running ? 'a' : 'red')}>
@@ -422,6 +586,8 @@ function System() {
           </div>
         )}
       </div>
+
+      <Maintenance />
 
       <div className="card">
         <h2>Before you go live</h2>

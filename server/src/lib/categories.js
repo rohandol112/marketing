@@ -87,6 +87,10 @@ export const CATEGORIES = [
   { id: 'landscaping', label: 'Landscaping / gardening', group: 'Services', tier: 'T2', q: 'landscaping company', type: null },
   { id: 'roofing', label: 'Roofing / waterproofing', group: 'Services', tier: 'T2', q: 'roofing waterproofing contractor', type: 'roofing_contractor' },
 
+  // Brokers, not builders. OpenStreetMap tags both office=estate_agent, and
+  // putting every broker under "developer" priced them as T1.
+  { id: 'real_estate_agent', label: 'Real estate agent / broker', group: 'Property', tier: 'T2', q: 'real estate agent', type: 'real_estate_agency' },
+
   // ---------- T2: retail ----------
   { id: 'furniture_store', label: 'Furniture store', group: 'Retail', tier: 'T2', q: 'furniture store', type: 'furniture_store' },
   { id: 'boutique', label: 'Boutique / apparel', group: 'Retail', tier: 'T2', q: 'clothing boutique', type: 'clothing_store' },

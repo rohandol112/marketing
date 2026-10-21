@@ -1,5 +1,7 @@
 import { generateJson, generateGrounded } from './llm.js';
 import { gapsFrom, explainScore } from './scoring.js';
+import { urgentIssue, recommendPackage } from './deal.js';
+import { asObject, daysSince } from './util.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 export { buildSystemPrompt };
 
@@ -17,22 +19,43 @@ function fmt(n) {
   return n == null ? '?' : Number(n).toLocaleString('en-IN');
 }
 
+/** A gap label read out mid-sentence: "I noticed no website at all", not "No website". */
+function midSentence(label) {
+  const s = String(label);
+  // Leave acronyms and names alone: "SSL certificate", "HTTPS", "Instagram".
+  return /^[A-Z]{2,}|^Instagram|^Google|^LinkedIn/.test(s) ? s : s.charAt(0).toLowerCase() + s.slice(1);
+}
+
+/** The same label said to the owner: "I noticed your site is down", not "site is down". */
+function spoken(label) {
+  return midSentence(label)
+    .replace(/^site /, 'your site ')
+    .replace(/^their /, 'your ')
+    .replace(/^SSL /, 'your SSL ');
+}
+
 /** The lead facts, in one consistent shape for every prompt. */
 export function leadContext(lead, extras = {}) {
   const b = lead.score_breakdown || {};
+  const ig = asObject(lead.social_audit).instagram;
   const lines = [
     'Business: ' + lead.name,
     'Category: ' + (lead.category || lead.normalized_category || 'unknown'),
-    'Area: ' + [lead.locality, lead.region, lead.country_code].filter(Boolean).join(', ') || (lead.address || 'unknown'),
+    'Area: ' + ([lead.locality, lead.region, lead.country_code].filter(Boolean).join(', ') || lead.address || 'unknown'),
     'Google reviews: ' + (lead.review_count ?? 'UNKNOWN - nobody has checked') + (lead.rating ? ' at ' + lead.rating + ' stars' : ''),
     'Website: ' + websiteLine(lead),
-    'Instagram followers: ' + (lead.ig_followers ?? 'UNKNOWN - not checked'),
+    'Instagram: ' + instagramLine(lead, ig),
     'LinkedIn followers: ' + (lead.li_followers ?? 'UNKNOWN - not checked'),
+    'Best contact: ' + contactLine(lead),
     'Data confidence: ' + (lead.confidence ?? '?') + '% - how much of this record is actually evidenced',
     'Years in business: ' + (lead.years_in_business ?? 'unknown'),
     'Locations: ' + (lead.locations_count ?? 'unknown'),
     'Lead score: ' + lead.score + ' out of 100, tier ' + lead.tier,
   ];
+
+  // The one thing to open with, when there is something urgent and true.
+  const urgent = urgentIssue(lead);
+  if (urgent) lines.push('', 'MOST URGENT, VERIFIED: ' + urgent);
 
   const signals = explainScore(b);
   if (signals.length) {
@@ -82,8 +105,40 @@ function websiteLine(lead) {
   }
   if (lead.website_status === 'none') return 'confirmed none - an authoritative source says they have no website';
   if (lead.website_status === 'social_only') return 'uses a social page as their website - they own no site of their own';
+  if (lead.website_status === 'protected') {
+    return 'exists, but blocks automated checks - say NOTHING about its content, speed or design';
+  }
   if (!lead.website) return 'UNKNOWN';
-  return lead.website_status + (lead.website_audit?.builder ? ' (built on ' + lead.website_audit.builder + ')' : '');
+  const audit = asObject(lead.website_audit);
+  const extra = [
+    audit.builder ? 'built on ' + audit.builder : null,
+    audit.agencyCredit ? 'footer credits ' + audit.agencyCredit : null,
+  ].filter(Boolean);
+  return (lead.website_status || 'not checked yet') + (extra.length ? ' (' + extra.join('; ') + ')' : '');
+}
+
+function instagramLine(lead, ig) {
+  if (ig && ig.found) {
+    const quiet = daysSince(ig.lastPostAt);
+    return '@' + ig.username + ': ' + Number(ig.followers || 0).toLocaleString('en-IN') + ' followers, ' +
+      (ig.mediaCount ?? '?') + ' posts' +
+      (quiet !== null ? ', last post ' + quiet + ' days ago' : '') +
+      ' (from Instagram itself)';
+  }
+  if (lead.ig_followers != null) return Number(lead.ig_followers).toLocaleString('en-IN') + ' followers' + (lead.ig_handle ? ' (@' + lead.ig_handle + ')' : '');
+  if (lead.ig_handle) return '@' + lead.ig_handle + ', follower count UNKNOWN';
+  return 'UNKNOWN - not checked';
+}
+
+/** Never the number itself - only what kind it is, so the advice fits the channel. */
+function contactLine(lead) {
+  const wa = asObject(lead.website_audit).contact?.whatsapp;
+  if (lead.phone_type === 'mobile') return 'a mobile number (WhatsApp works)';
+  if (wa) return 'a WhatsApp number from their own website';
+  if (lead.phone_type === 'landline') return 'a landline - call during business hours, WhatsApp will not reach it';
+  if (lead.phone_type === 'tollfree') return 'a toll-free line - expect a receptionist, ask for the owner';
+  if (lead.email) return 'email only';
+  return 'no phone number yet';
 }
 
 /* ================================================================== */
@@ -263,26 +318,70 @@ function pickPackage(lead, packages) {
   return sorted[0];
 }
 
-function briefFallback(lead, packages) {
+/** How each website state reads in a sentence. "a unknown website" was the old one. */
+const SITE_PHRASE = {
+  none: 'no website',
+  unknown: 'a website nobody has checked yet',
+  ok: 'a working website',
+  broken: 'a website that is down',
+  placeholder: 'an unfinished website',
+  parked: 'a parked domain where a website should be',
+  social_only: 'only a social page for a website',
+  protected: 'a website that blocks automated checks',
+};
+
+/**
+ * Which service answers a gap, and why it matters, in words a rep can say.
+ * Services are looked for in the tenant's own catalogue, in order.
+ */
+const GAP_PLAYBOOK = [
+  [/hidden from google|google scores|meta description|schema|search/i, ['SEO Audit', 'Increase site index'], 'They do not come up when someone nearby searches for what they sell.'],
+  [/analytics|tracking|retarget|ad tracking/i, ['Pay-Per-Click Ads', 'Lead Generation', 'Sponsored Ads'], 'Every rupee of marketing is a guess, and every visitor who leaves is gone for good.'],
+  [/enquire|whatsapp|conversion/i, ['Ai Chatbot Agent', 'Custom Website Development'], 'Visitors who want to book have to go and find a phone number.'],
+  [/instagram|social|follower|linkedin/i, ['Social Media Management', 'Reel Contents', 'Content Management'], 'The customers they already have are not turning into an audience.'],
+  [/stars|rating/i, ['Social Media Management', 'Public Relation'], 'People compare stars before they call, and this rating is losing them the call.'],
+  [/website|site|domain|ssl|https|mobile|pagespeed|content|untouched|template|placeholder|technology/i, ['Custom Website Development', 'Web Design', 'Wordpress Development'], 'Customers who search their name after a recommendation land on this.'],
+];
+
+function gapPlay(label, catalog) {
+  const names = new Set((catalog || []).filter((s) => s.active !== false).map((s) => s.name));
+  for (const [re, services, why] of GAP_PLAYBOOK) {
+    if (!re.test(label)) continue;
+    const service = services.find((s) => names.has(s)) || services[0];
+    return { why, service };
+  }
+  return { why: 'Customers looking for them online do not find what the business actually is.', service: 'Custom Website Development' };
+}
+
+export function briefFallback(lead, packages, catalog = []) {
   const gaps = gapsFrom(lead.score_breakdown).slice(0, 3);
-  const pkg = pickPackage(lead, packages);
+  // The same recommendation the lead card shows, so the two never disagree.
+  const pkg = (() => {
+    const rec = recommendPackage(lead, packages, catalog);
+    return rec ? packages.find((p) => p.id === rec.id) : pickPackage(lead, packages);
+  })();
+  const urgent = urgentIssue(lead);
+  const reviews = lead.review_count != null ? fmt(lead.review_count) + ' Google reviews' : null;
+  const gapText = gaps[0] ? spoken(gaps[0]) : 'a few gaps online';
   return {
-    headline:
-      lead.name + ' has ' + (lead.review_count ?? 'a number of') + ' Google reviews and ' +
-      (lead.website_status === 'none' ? 'no website' : 'a ' + (lead.website_status || 'thin') + ' website') + '.',
-    gaps: (gaps.length ? gaps : ['Digital presence not yet reviewed']).map((g) => ({
-      gap: g,
-      why_it_matters: 'Customers looking for them online do not find what the business actually is.',
-      service: 'Custom Website Development',
-    })),
+    headline: urgent
+      ? lead.name + ': ' + midSentence(urgent) + '.'
+      : lead.name + ' has ' + (reviews ? reviews + ' and ' : '') + (SITE_PHRASE[lead.website_status] || 'a website') + '.',
+    gaps: (gaps.length ? gaps : ['Digital presence not yet reviewed']).map((g) => {
+      const play = gapPlay(g, catalog);
+      return { gap: g, why_it_matters: play.why, service: play.service };
+    }),
     decision_maker: 'Owner or proprietor (guess - confirm on the call)',
-    best_channel: 'whatsapp',
+    best_channel: lead.phone_type === 'landline' ? 'phone' : 'whatsapp',
     best_time: 'Late morning, before the lunch rush',
-    opener:
-      'Hi, I was looking at ' + lead.name + ' on Google - ' + (lead.review_count ?? 'plenty of') +
-      ' reviews is a lot of happy customers. I noticed ' + (gaps[0] || 'a few gaps online') + '. Worth two minutes?',
+    opener: reviews
+      ? 'Hi, I was looking at ' + lead.name + ' on Google - ' + fmt(lead.review_count) +
+        ' reviews is a lot of happy customers. I noticed ' + gapText + '. Worth two minutes?'
+      : 'Hi, I was looking at ' + lead.name + ' online and noticed ' + gapText + '. Worth two minutes?',
     recommended_package_id: pkg ? pkg.id : '',
-    price_band: pkg ? pkg.currency + ' ' + fmt(pkg.price_min) + ' to ' + fmt(pkg.price_max) : 'To be set',
+    price_band: pkg
+      ? pkg.currency + ' ' + fmt(pkg.price_min) + (pkg.price_max ? ' to ' + fmt(pkg.price_max) : '+') + (pkg.billing === 'monthly' ? ' a month' : '')
+      : 'To be set',
     objection_to_expect: 'We already tried this and it did not work',
     objection_response: 'Ask what exactly was tried and what the result was. Usually it was posting without a plan.',
     do_not_say: 'Do not tell them their business looks unprofessional.',
@@ -306,7 +405,7 @@ export async function generatePrecallBrief({ tenant, catalog, packages, lead, re
     system,
     user,
     schema: BRIEF_SCHEMA,
-    fallback: () => briefFallback(lead, packages),
+    fallback: () => briefFallback(lead, packages, catalog),
     temperature: 0.5,
   });
 }
@@ -326,13 +425,13 @@ const WA_SCHEMA = {
   propertyOrdering: ['message', 'follow_up_if_no_reply', 'why_this_angle'],
 };
 
-function waFallback(lead, tenant) {
+export function waFallback(lead, tenant) {
   const gaps = gapsFrom(lead.score_breakdown);
   return {
     message:
       'Hi, this is {{repName}} from ' + tenant.name + '. I came across ' + lead.name +
       ' on Google - ' + (lead.review_count ?? 'a lot of') + ' reviews is genuinely hard to earn. ' +
-      'One thing stood out: ' + (gaps[0] || 'your online presence has room to grow') +
+      'One thing stood out: ' + (gaps[0] ? spoken(gaps[0]) : 'your online presence has room to grow') +
       '. Would it be alright if I sent over a short breakdown?',
     follow_up_if_no_reply:
       'Hi again - no pressure at all. I put together a two-page look at how ' + lead.name +

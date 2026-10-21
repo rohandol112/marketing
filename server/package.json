@@ -11,7 +11,8 @@
     "migrate:rollback": "knex --knexfile knexfile.js migrate:rollback",
     "seed": "knex --knexfile knexfile.js seed:run",
     "setup": "npm run migrate && npm run seed",
-    "test": "node --test src/lib/*.test.js"
+    "cleanup": "node scripts/cleanup.js",
+    "test": "node --test src/lib/*.test.js src/services/*.test.js"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

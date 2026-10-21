@@ -33,6 +33,38 @@ confidence a lead **cannot** be assigned to a rep.
 Unknown data scores **zero**. Paying points for a missing review count makes every unverified lead
 cluster at the same fake number, which is worse than useless because it looks like a ranking.
 
+## The hot list: what can close this week
+
+A third number ranks one list and does nothing else. **Deal readiness** (0–100) asks whether a rep
+can get the owner on the phone this week and leave with a signed deal:
+
+| | Points | From |
+|---|---|---|
+| Size | 40 | Category tier, review volume (1,000+ reviews is a busy business), several branches |
+| Visible pain | 35 | The digital gap, plus 10 for something urgent they can see today: site down, domain parked, browser security warning, hidden from Google, 100+ reviews and no site, a rating under 4 |
+| Reachable owner | 25 | A mobile or WhatsApp number (16), verified facts, owner-run rather than a branch |
+
+Unverified facts (×0.6), an existing agency (×0.5) and a Google Ads tag (×0.85) hold it back.
+**Review queue → Close this week** lists everything at 50+ with a dialable number, biggest first,
+with the opening line under each name and the package that answers its gaps. It never qualifies
+anything - the gates above still decide what reaches a board.
+
+## Who is never a prospect
+
+Some businesses score beautifully and will never sign, so they are excluded before scoring, each
+with a reason a person can read and overrule in one click (the override sticks):
+
+- **Chain and franchise outlets** - Tanishq, Lakmé, Gold's Gym, Metropolis, Marriott, bank branches.
+  Matched within their own industry, so "Aurelia Mansion" (a banquet hall) is not the clothing brand
+  and "Kotak Dental" is not the bank. OpenStreetMap's brand tags catch the rest.
+- **Government and public bodies** - municipal schools, BMC/PCMC dispensaries, police and railway
+  hospitals, anything on a `.gov.in` or `.nic.in` site.
+- **Placeholder listings** - "XYZ", "Clinic", nameless map features.
+- **Duplicates** and **out-of-area** results (Maps answers "near" generously).
+
+A lead a rep is already working is never pulled off their board by a rule change: it stays, and the
+concern travels with it as a warning.
+
 ## Two state machines, never mixed
 
 ```
@@ -58,9 +90,23 @@ real data always beats generated data, so Gemini is never chosen automatically.
 | Source | Trust | Notes |
 |---|---|---|
 | `places` | Authoritative | Google Places API (New). ~$0.035/call at the Enterprise field mask. `rating`, `userRatingCount`, `phone` and `websiteUri` are all Enterprise fields — there is no cheaper mask that still produces a usable lead. `reviews` is never requested. |
+| `maps` | Looked up, not recalled | Google Maps through Gemini's Maps grounding: rating, review count, phone, website and place id for real listings. Picked automatically when a Gemini key is set and Places is not. Needs a working Google AI Studio key (`AIza…`). |
 | `osm` | **Real, free, default** | OpenStreetMap via Overpass. Businesses a contributor physically surveyed, with coordinates. No key, no quota. ~130 businesses per 3km sweep, roughly 20% carry a phone. No ratings — that's Google's data — so leads land at `verified` and need a review count before they qualify. |
 | `gemini` | **Unverified** | Model recall. Lands every lead in `discovered`. No phone is ever produced. Opt in explicitly. |
 | `mock` | Synthetic | For working on the UI. |
+
+OpenStreetMap tags are broad - `healthcare=clinic` is every clinic in the city - so each result is
+sorted into the right category from its name and specialist tags. A general clinic found while
+sweeping "cosmetic surgery" is a polyclinic, and is left out if you did not ask for polyclinics.
+
+### Google Maps lookup
+
+Directory leads have no review count, which is the whole demand score. After an OpenStreetMap
+sweep each new lead is looked up on Google Maps (T1 first, capped by `MAPS_ENRICH_MAX_PER_RUN`) for
+its reviews, rating, phone, website, place id and trading status. The answer is graded: a clear
+match is written with its provenance, a near-match is offered to a person as one-click candidates,
+anything else is ignored. **Look up Google reviews** in the review queue does the same for existing
+leads. Google-sourced fields are looked up again after 30 days, which is what Google's terms ask.
 
 ### Area selection
 
@@ -168,12 +214,61 @@ Analytics tells you which one.
 
 ---
 
-## What has no API, by design
+## The website audit
 
-Instagram/LinkedIn follower counts and "are they running ads" have no legal API, and Meta's Ad
-Library is scoped to political ads — commercial ads in India are UI-only. These are **fields in the
-rep's ten-minute audit**, not blockers in the pipeline. The drawer gives one-click search links and
-a form. Anything a human types beats anything fetched, and the score updates on save.
+Plain HTTP, no headless browser. It tries the URL as stored, then with and without `www`, then over
+plain http - many small-business domains only answer on one of them - and tells three failures apart:
+**broken** (domain expired, server error, 404), **protected** (a firewall or free-host check blocks
+automated visits: never called broken, never claimed about), and **parked** (for sale, suspended
+hosting, an unconfigured server). On a live site it reads:
+
+- **Measurement** - Google Analytics 4, Tag Manager, Meta pixel, Google Ads tag, dead Universal Analytics
+- **Ways to enquire** - WhatsApp button, click-to-call, form, booking, live chat, shop
+- **Search basics** - `noindex`, meta description, local business schema, share previews
+- **Health** - SSL certificate validity, mobile viewport *and* responsive CSS, outdated tech (Flash,
+  jQuery 1.x, WordPress 5, 1990s markup), copyright year, thin content (script text is not content)
+- **Contacts on their own site** - phone and WhatsApp numbers (written to the lead when it has none),
+  emails including Cloudflare-hidden ones, the real social handles (share buttons and reel links ignored)
+- **Who built it** - "Designed by …" footer credits
+
+With `PAGESPEED_API_KEY`, Google's own mobile performance and SEO scores and load time come with it.
+
+## Instagram and the rest of social
+
+Instagram numbers come from Instagram's own **Business Discovery API** - followers, post count, last
+post and engagement for any public business or creator account, looked up through your agency's
+Instagram business account. No scraping. Set `META_GRAPH_TOKEN` (a long-lived token with
+`instagram_basic` and `pages_read_engagement`) and `INSTAGRAM_BUSINESS_ID`. A count is written only
+when the account demonstrably belongs to the business (its handle is on their site, it links back to
+their site, or it carries their name); otherwise it is a candidate a person accepts. A personal
+account reads as unknown, never as "no Instagram".
+
+LinkedIn followers and "are they running ads" still have no API for this. They stay **fields in the
+rep's ten-minute audit**. Anything a human types beats anything fetched, and the score updates on save.
+
+## Data cleanup
+
+`services/maintenance.js` keeps the table worth trusting. It runs on its own every
+`MAINTENANCE_INTERVAL_HOURS` (first run a minute after boot), and from **Settings → System → Data
+cleanup** or the command line:
+
+```bash
+npm run cleanup               # preview: the full report, nothing written
+npm run cleanup -- --apply    # do it
+```
+
+| Step | What it does |
+|---|---|
+| Normalise | Phones read in the right country (`020 2563 6999` is `+912025636999`, not Egypt) and typed mobile/landline/invalid; websites, emails, Instagram handles and localities cleaned; dedupe keys rebuilt for every script |
+| Reclassify | Directory leads filed under the wrong category moved to the right one |
+| Exclude | Chains, government bodies and placeholder listings marked, with reasons |
+| Merge | The same business entered twice becomes one: activities, AI history and proposals move to the survivor, which inherits every field it was missing. Never two pipeline leads |
+| Housekeep | Finished jobs (7 days), failed jobs (30), usage rows (400), AI drafts nobody acted on (45 - accepted, edited and rejected ones are the eval set and are kept), empty sweeps, stuck sweeps, rejected leads nobody worked (60), stale candidates, raw do-not-contact numbers |
+| Rescore | Everything, then `VACUUM (ANALYZE)` |
+
+Merged and purged leads leave their keys in `lead_suppressions`, so the next sweep cannot quietly
+bring them back, and every run's full report is kept in `maintenance_runs`. A second run straight
+after the first changes nothing.
 
 ---
 
@@ -238,18 +333,22 @@ docker run -p 8787:8787 -v dudeai_pg:/var/lib/postgresql/data --env-file .env du
 
 ```
 server/
-  migrations/          init · rls · confidence_and_lifecycle · external_id
+  migrations/          init · rls · confidence_and_lifecycle · external_id · … · lead_quality
   seeds/01_tanz.js     62 services from the service profile deck, 6 packages
-  src/lib/             scoring · confidence · categories(71) · places · osm · geminiDiscovery
-                       gemini · prompts · websiteAudit · queue · wa · geo(nominatim)
-  src/services/        discovery · lifecycle · leads · ai
+  scripts/cleanup.js   the data cleanup, from the command line
+  src/lib/             scoring · confidence · deal · classify · categories(72) · places · osm
+                       mapsDiscovery · instagram · geminiDiscovery · llm · prompts · websiteAudit
+                       queue · wa · geo(nominatim) · util
+  src/services/        discovery · enrichment · maintenance · lifecycle · leads · ai
   src/routes/          meta · discovery · leads · ai · analytics · settings
 web/src/pages/         Board · Review · Discovery · Analytics · Settings
 ```
 
-`npm test` in `server/` runs 18 tests over scoring and confidence, including hand-labelled fixtures
-(Narenkumar, Mauli Garden, Tangent) that must always rank tier A. If a weight change breaks them,
-the weight change is wrong until closed-won data proves otherwise.
+`npm test` in `server/` runs 121 tests: scoring and confidence, including hand-labelled fixtures
+(Narenkumar, Mauli Garden, Tangent) that must always rank tier A - if a weight change breaks them,
+the weight change is wrong until closed-won data proves otherwise - plus phone parsing, exclusions,
+category sorting, the website auditor against a fake network, the Maps and Instagram lookups, the
+hot-list ranking and the merge rules.
 
 ---
 

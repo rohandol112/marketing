@@ -18,6 +18,8 @@ import { startWorker, requeueStale, stopWorker } from './lib/queue.js';
 
 // Importing the services registers their queue handlers.
 import './services/discovery.js';
+import './services/enrichment.js';
+import { startMaintenanceScheduler, stopMaintenanceScheduler } from './services/maintenance.js';
 
 import metaRoutes from './routes/meta.js';
 import discoveryRoutes from './routes/discovery.js';
@@ -142,7 +144,10 @@ async function boot() {
   }
 
   await requeueStale();
-  startWorker({ concurrency: 1 });
+  // Audits and Maps lookups are network-bound and mostly waiting; one at a
+  // time made a 300-lead re-audit take an afternoon.
+  startWorker({ concurrency: config.worker.concurrency });
+  startMaintenanceScheduler();
 
   serve({ fetch: app.fetch, port: config.port }, (info) => {
     console.log('\n  DudeAI Sales Agent API');
@@ -157,6 +162,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, async () => {
     console.log('\nshutting down');
     stopWorker();
+    stopMaintenanceScheduler();
     await knex.destroy().catch(() => {});
     process.exit(0);
   });

@@ -1,5 +1,5 @@
 import knex, { logUsage } from '../db/knex.js';
-import { uid, now, sha1 } from '../lib/util.js';
+import { uid, now, sha1, normalizeUrl, normalizeHost, cleanInstagramHandle } from '../lib/util.js';
 import {
   generatePrecallBrief,
   generateWhatsappOpener,
@@ -9,7 +9,7 @@ import {
   enrichSocial,
 } from '../lib/prompts.js';
 import { renderDeep, templateVars, unresolvedTokens } from '../lib/render.js';
-import { waLink, telLink, mailtoLink, adLibraryLinks } from '../lib/wa.js';
+import { waLink, telLink, mailtoLink, adLibraryLinks, whatsappNumber } from '../lib/wa.js';
 
 /**
  * The AI layer.
@@ -51,7 +51,9 @@ function cacheKey(kind, lead, extra = {}) {
       reviews: lead.review_count,
       lastActivity: extra.lastActivityId || null,
       note: extra.noteHash || null,
-      v: 2,
+      // 3: the prompt now carries the verified urgent issue, Instagram activity
+      // and the kind of number on file, so older drafts are stale.
+      v: 3,
     })
   );
 }
@@ -225,11 +227,14 @@ export async function verifyByResearch({ tenantId, leadId }) {
 
     // Anything the search actually found and we did not already have.
     const dp = found.digital_presence || {};
-    if (!lead.website && dp.website) {
-      patch.website = dp.website;
+    const site = normalizeUrl(dp.website);
+    if (!lead.website && site) {
+      patch.website = site;
+      patch.website_host = normalizeHost(site);
       patch.website_status = null;   // let the auditor decide, do not assume
     }
-    if (!lead.ig_handle && dp.instagram) patch.ig_handle = String(dp.instagram).replace('@', '');
+    const handle = cleanInstagramHandle(dp.instagram);
+    if (!lead.ig_handle && handle) patch.ig_handle = handle;
     if (lead.ig_followers == null && dp.followers_estimate) {
       const n = Number(String(dp.followers_estimate).replace(/[^0-9.]/g, ''));
       const mult = /k/i.test(String(dp.followers_estimate)) ? 1000 : /m/i.test(String(dp.followers_estimate)) ? 1000000 : 1;
@@ -322,8 +327,7 @@ export async function enrichLeadSocial({ tenantId, leadId }) {
   };
 
   // A handle is cheap to verify by eye, so it goes straight on the lead.
-  const handle = typeof d.instagram_handle === 'string'
-    ? d.instagram_handle.replace('@', '').trim() : null;
+  const handle = cleanInstagramHandle(d.instagram_handle);
   if (!lead.ig_handle && handle) {
     patch.ig_handle = handle;
     prov.ig_handle = { source: 'grounded_search', method: 'social_enrichment', verified_at: now() };
@@ -446,8 +450,8 @@ async function decorate(suggestion, lead, tenantId, userId) {
     raw: suggestion.output,
     unresolved: [...missing],
     links: {
-      whatsapp: waLink(lead.phone, rendered.opener || rendered.message || ''),
-      tel: telLink(lead.phone),
+      whatsapp: waLink(whatsappNumber(lead), rendered.opener || rendered.message || ''),
+      tel: telLink(lead.phone_normalized),
       mailto: mailtoLink(lead.email, 'A quick look at ' + lead.name, rendered.message || ''),
       ...adLibraryLinks(lead),
     },
@@ -495,15 +499,21 @@ export async function getWhatsappOpener({ tenantId, leadId, userId, force = fals
 
 async function decorateWa(suggestion, lead, tenantId, userId) {
   const base = await decorate(suggestion, lead, tenantId, userId);
+  const number = whatsappNumber(lead);
   return {
     ...base,
     links: {
       ...base.links,
-      whatsapp: waLink(lead.phone, base.output.message || ''),
-      whatsappFollowUp: waLink(lead.phone, base.output.follow_up_if_no_reply || ''),
+      whatsapp: waLink(number, base.output.message || ''),
+      whatsappFollowUp: waLink(number, base.output.follow_up_if_no_reply || ''),
     },
-    canSend: Boolean(lead.phone),
-    blockedReason: lead.phone ? null : 'No phone number on this lead - add one before sending.',
+    whatsappTo: number,
+    canSend: Boolean(number),
+    blockedReason: number
+      ? null
+      : lead.phone
+        ? 'The phone number on this lead cannot be dialled - fix it before sending.'
+        : 'No phone number on this lead - add one before sending.',
   };
 }
 
