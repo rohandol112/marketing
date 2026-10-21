@@ -19,7 +19,14 @@ export default function Discovery() {
   const [selected, setSelected] = useState(new Set(app.presets.balanced.ids));
   const [minReviews, setMinReviews] = useState(0);
   const [maxPages, setMaxPages] = useState(app.modes.maxPages || 3);
-  const [source, setSource] = useState(app.modes.discoverySource);
+  // The configured source, unless the server says it cannot run - then the
+  // best one that can, so the first click is not a sweep that fails.
+  const [source, setSource] = useState(() => {
+    const all = app.discoverySources || [];
+    const configured = all.find((s) => s.id === app.modes.discoverySource);
+    if (!configured || configured.available) return app.modes.discoverySource;
+    return (all.find((s) => s.available && s.recommended) || all.find((s) => s.available) || configured).id;
+  });
   // Directory sources carry no review count - the whole demand score - so each
   // new lead can be looked up on Google Maps after the sweep.
   const [enrichMaps, setEnrichMaps] = useState(app.modes.mapsEnrichOnDiscovery !== false);
@@ -201,10 +208,13 @@ export default function Discovery() {
                 />
                 <strong style={{ fontSize: 13 }}>{src.label}</strong>
                 {src.recommended && src.available && <span className="badge a">recommended</span>}
-                {!src.available && <span className="badge">no key</span>}
+                {!src.available && <span className="badge">{/refused/i.test(src.unavailableReason || '') ? 'key refused' : 'no key'}</span>}
               </div>
               <div className="small muted">{src.note}</div>
               <div className="small faint" style={{ marginTop: 6 }}>{src.caveat}</div>
+              {!src.available && src.unavailableReason && (
+                <div className="small" style={{ marginTop: 6, color: 'var(--red)' }}>{src.unavailableReason}</div>
+              )}
             </div>
           ))}
         </div>

@@ -22,12 +22,33 @@ export const config = {
 
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
+    // Overridable so a sweep can be exercised against a local stand-in.
+    baseUrl: (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/+$/, ''),
     modelFast: process.env.GEMINI_MODEL_FAST || 'gemini-3.5-flash-lite',
     modelMain: process.env.GEMINI_MODEL_MAIN || 'gemini-3.6-flash',
     rpm: num(process.env.GEMINI_RPM, 10),
     rpd: num(process.env.GEMINI_RPD, 250),
     concurrency: num(process.env.GEMINI_CONCURRENCY, 1),
     get mock() { return !this.apiKey; },
+  },
+
+  /**
+   * Google Maps grounding, for discovery and single-business lookups.
+   *
+   * Measured on gemini-3.6-flash: at the default thinking level one Maps call
+   * takes 45-70s and spends 6-8k thought tokens. At "minimal" the same query
+   * returns in ~17s with no thought tokens, and the businesses both settings
+   * found carried identical ratings, review counts, phones and place ids.
+   * Applied to gemini-3.x flash only (see thinkingFor): gemini-2.5-flash with
+   * thinking off returned no businesses at all. "default" switches it off.
+   */
+  maps: {
+    thinkingLevel: (process.env.MAPS_THINKING_LEVEL || 'minimal').toLowerCase(),
+    // Maps calls in flight at once, across sweeps and lookups. Kept apart from
+    // the drafting limiter so a sweep never starves a rep's brief.
+    concurrency: num(process.env.MAPS_CONCURRENCY, 4),
+    // Categories swept side by side; each runs its search angles in parallel.
+    categoryConcurrency: num(process.env.DISCOVERY_CATEGORY_CONCURRENCY, 2),
   },
 
   /**
@@ -92,8 +113,9 @@ export function discoverySource() {
   if (explicit !== 'auto') return explicit;
   if (config.places.apiKey) return 'places';
   // Maps grounding returns rating, reviews, phone and a place id - everything
-  // the gates need - so it outranks both recall and OpenStreetMap.
-  if (config.gemini.apiKey) return 'maps';
+  // the gates need - so it outranks both recall and OpenStreetMap. Not with a
+  // key Google has already refused, though: that sweep can only come back empty.
+  if (config.gemini.apiKey && !geminiKeyRefused) return 'maps';
   // Grounded Gemini is retrieval with citations, which beats OSM's thin
   // coverage. Ungrounded it is recall, and OSM is the safer default - so this
   // only prefers Gemini when search grounding is actually available.
@@ -112,6 +134,12 @@ export function groundingAvailable() {
 }
 export function setGroundingAvailable(v) {
   groundingProbe = v;
+}
+
+/** Set by the key check in llm.js; read here so `auto` never picks a dead source. */
+let geminiKeyRefused = false;
+export function setGeminiKeyRefused(v) {
+  geminiKeyRefused = Boolean(v);
 }
 
 export default config;

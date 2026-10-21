@@ -3,10 +3,10 @@ import knex from '../db/knex.js';
 import { HttpError, uid, now, asObject, phoneInfo, countryFor, addDays } from '../lib/util.js';
 import {
   moveStage, reviewLeads, autoAssign, assignOnly, logActivity, updateLeadFields, isSuppressed, setExclusion,
-  resolveCandidate, STAGES,
+  resolveCandidate, recordInstagram, STAGES,
 } from '../services/leads.js';
 import { auditLead, rescoreLead, queueMapsEnrichment, queueSocialEnrichment, refreshStaleLeads, tenantCountry } from '../services/discovery.js';
-import { enrichFromMaps, enrichInstagram } from '../services/enrichment.js';
+import { enrichFromMaps, enrichSocialPresence } from '../services/enrichment.js';
 import { enqueue } from '../lib/queue.js';
 import { waLink, telLink, adLibraryLinks, whatsappNumber } from '../lib/wa.js';
 import { gapsFrom } from '../lib/scoring.js';
@@ -696,17 +696,33 @@ app.post('/:id/enrich-maps', async (c) => {
   return c.json(await enrichFromMaps({ leadId: lead.id, force: true }));
 });
 
-app.post('/:id/enrich-instagram', async (c) => {
+/**
+ * Social presence for one lead, by the best route available - Instagram's API
+ * when there is a handle and a token, Google search otherwise. The old
+ * Instagram-only path answers the same way so nothing that calls it breaks.
+ */
+async function socialLookup(c) {
   const lead = await knex('leads').where({ id: c.req.param('id'), tenant_id: c.get('tenantId') }).first('id');
   if (!lead) throw new HttpError(404, 'Lead not found');
-  return c.json(await enrichInstagram({ leadId: lead.id, force: true }));
-});
+  return c.json(await enrichSocialPresence({ leadId: lead.id, force: true }));
+}
+app.post('/:id/enrich-social', socialLookup);
+app.post('/:id/enrich-instagram', socialLookup);
 
-app.post('/:id/enrich-social', async (c) => {
-  const lead = await knex('leads').where({ id: c.req.param('id'), tenant_id: c.get('tenantId') }).first('id');
-  if (!lead) throw new HttpError(404, 'Lead not found');
-  const { enrichLeadSocial } = await import('../services/ai.js');
-  return c.json(await enrichLeadSocial({ tenantId: c.get('tenantId'), leadId: lead.id }));
+/** Instagram numbers a person read off Google or the profile: pasted text or typed values. */
+app.post('/:id/instagram', async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const lead = await recordInstagram({
+    tenantId: c.get('tenantId'),
+    leadId: c.req.param('id'),
+    text: b.text,
+    handle: b.handle,
+    followers: b.followers,
+    posts: b.posts,
+    lastPostAt: b.lastPostAt,
+    userId: c.get('userId'),
+  });
+  return c.json(summarize(lead));
 });
 
 app.post('/enrich-social', async (c) => {
@@ -720,9 +736,11 @@ app.post('/enrich-social', async (c) => {
   return c.json({
     queued: r.queued,
     available: r.available,
-    note: r.queued
-      ? 'Social presence lookups queued via Google Search grounding.'
-      : 'Nothing to look up: leads already have follower counts or were checked recently.',
+    note: !r.available
+      ? 'Social lookup is off: set GEMINI_API_KEY, or META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID.'
+      : r.queued
+        ? 'Social presence lookups queued, best prospects first.'
+        : 'Nothing to look up: these leads already have follower counts, were checked in the last 14 days, or are excluded.',
   });
 });
 

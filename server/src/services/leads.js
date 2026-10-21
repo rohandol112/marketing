@@ -1,6 +1,7 @@
 import knex from '../db/knex.js';
 import {
   uid, now, addDays, HttpError, phoneFields, countryFor, normalizeUrl, normalizeHost, cleanEmail, cleanInstagramHandle,
+  asObject, parseHumanCount, parseInstagramSnippet,
 } from '../lib/util.js';
 import { EXCLUSION_KINDS, EXCLUSION_LABELS } from '../lib/classify.js';
 import { enqueue } from '../lib/queue.js';
@@ -514,7 +515,7 @@ export async function updateLeadFields({ tenantId, leadId, patch, userId }) {
 
 /** Fields a found-but-unconfirmed value can be accepted into. */
 const CANDIDATE_FIELDS = new Set([
-  'phone', 'website', 'review_count', 'rating', 'ig_followers', 'li_followers', 'fb_followers',
+  'phone', 'website', 'review_count', 'rating', 'ig_handle', 'ig_followers', 'li_followers', 'fb_followers',
   'years_in_business', 'locations_count',
 ]);
 
@@ -547,6 +548,80 @@ export async function resolveCandidate({ tenantId, leadId, field, accept, userId
   prov[field].evidence = c.source || null;
   prov[field].found_via = c.via || null;
   await knex('leads').where({ id: leadId }).update({ field_provenance: JSON.stringify(prov), candidates: JSON.stringify(cand) });
+  return knex('leads').where({ id: leadId }).first();
+}
+
+/**
+ * Instagram numbers a person read: the line Google shows for the profile,
+ * pasted as is, or the values typed. This is the dependable route to follower
+ * and post counts without Meta's API - search grounding almost never returns
+ * them - and it is ten seconds a lead.
+ *
+ * Saved as the person's own values, and the Instagram block is marked as
+ * checked by a person, so the score and the pitch use it at full trust.
+ */
+export async function recordInstagram({ tenantId, leadId, text, handle, followers, posts, lastPostAt, userId }) {
+  const lead = await knex('leads').where({ id: leadId, tenant_id: tenantId }).first();
+  if (!lead) throw new HttpError(404, 'Lead not found');
+
+  const given = (v) => v !== undefined && v !== null && v !== '';
+  const parsed = given(text) ? parseInstagramSnippet(text) : null;
+  if (given(text) && !parsed) {
+    throw new HttpError(400, 'No Instagram numbers in that text. Paste the line Google shows for the profile, like '
+      + '"1,234 Followers, 56 Following, 78 Posts - See Instagram photos and videos from ... (@handle)".');
+  }
+  if (given(handle) && !cleanInstagramHandle(handle)) throw new HttpError(400, 'That does not look like an Instagram handle: ' + handle);
+
+  const count = (v, name) => {
+    if (!given(v)) return null;
+    const n = parseHumanCount(v);
+    if (n === null) throw new HttpError(400, name + ' must be a number, like 1234 or 12.4K - got: ' + v);
+    return n;
+  };
+  const h = cleanInstagramHandle(handle) || (parsed && parsed.handle) || cleanInstagramHandle(lead.ig_handle);
+  const f = given(followers) ? count(followers, 'followers') : parsed ? parsed.followers : null;
+  const p = given(posts) ? count(posts, 'posts') : parsed ? parsed.posts : null;
+  let last = null;
+  if (given(lastPostAt)) {
+    const t = Date.parse(lastPostAt);
+    if (!Number.isFinite(t) || t > Date.now() + 86400000 || t < Date.parse('2010-10-06')) {
+      throw new HttpError(400, 'lastPostAt must be a date between October 2010 and today, got: ' + lastPostAt);
+    }
+    last = new Date(t).toISOString();
+  }
+  if (!h) throw new HttpError(400, 'Which account? Include the @handle.');
+  if (f === null && p === null && !last && h === lead.ig_handle) throw new HttpError(400, 'Nothing to save.');
+
+  const fields = {};
+  if (h !== lead.ig_handle) fields.ig_handle = h;
+  if (f !== null) fields.ig_followers = f;
+  if (Object.keys(fields).length) await updateLeadFields({ tenantId, leadId, patch: fields, userId });
+
+  const fresh = await knex('leads').where({ id: leadId }).first();
+  const social = asObject(fresh.social_audit);
+  const prev = social.instagram && (social.instagram.handle || social.instagram.username) === h ? social.instagram : {};
+  social.instagram = {
+    ...prev,
+    found: true,
+    handle: h,
+    username: h,
+    followers: f ?? prev.followers ?? null,
+    following: (parsed && parsed.following) ?? prev.following ?? null,
+    mediaCount: p ?? prev.mediaCount ?? null,
+    // No posts means no last post, whatever an older check said.
+    lastPostAt: last ?? (p === 0 ? null : prev.lastPostAt ?? null),
+    checkedAt: now(),
+    source: 'human',
+    by: userId || null,
+  };
+  // What a lookup offered for these fields is settled by what the person saw.
+  const cand = asObject(fresh.candidates);
+  delete cand.ig_handle;
+  if (f !== null) delete cand.ig_followers;
+  await knex('leads').where({ id: leadId }).update({
+    social_audit: JSON.stringify(social), candidates: JSON.stringify(cand), updated_at: now(),
+  });
+  await rescoreLead(leadId);
   return knex('leads').where({ id: leadId }).first();
 }
 

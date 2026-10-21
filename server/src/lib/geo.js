@@ -1,6 +1,6 @@
 import config from '../config.js';
 import { costPerCall } from './places.js';
-import { sleep } from './util.js';
+import { sleep, nameSimilarity } from './util.js';
 
 const ENDPOINT = 'https://places.googleapis.com/v1/places:searchText';
 const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
@@ -199,6 +199,8 @@ async function nominatimSearch(query, limit, regionCode, signal) {
         lat: Number(r.lat),
         lng: Number(r.lon),
         kind: r.addresstype || r.type || null,
+        // 30 is a building or a named place; a street is 26, a suburb about 20.
+        rank: Number.isFinite(Number(r.place_rank)) ? Number(r.place_rank) : null,
         source: 'openstreetmap',
       };
     })
@@ -317,3 +319,41 @@ export async function searchAreas(query, { limit = 8, regionCode, signal } = {})
 }
 
 export { OFFLINE_PLACES };
+
+/** True for a point that came off the offline list above rather than a geocoder. */
+export function isOfflinePoint(lat, lng) {
+  if (lat === null || lat === undefined || lng === null || lng === undefined) return false;
+  return OFFLINE_PLACES.some((p) => Math.abs(p.lat - Number(lat)) < 0.00005 && Math.abs(p.lng - Number(lng)) < 0.00005);
+}
+
+/**
+ * Where one business is, or null.
+ *
+ * Not searchAreas: that is built to always answer for the area picker, falling
+ * back to a short offline list of neighbourhoods. Used to place a business, the
+ * fallback put every address OpenStreetMap could not read on "Aundh" - and the
+ * out-of-area check then excluded real Kothrud clinics as 5.7 km away.
+ *
+ * Only a point is accepted: a building or a named place (rank 28+), or the
+ * business found under its own name. A street or a suburb centre is an area,
+ * and a distance measured from one is fiction.
+ */
+export async function locateBusiness({ name, address, locality, region, countryCode }, { search = nominatimSearch } = {}) {
+  const tries = [
+    { q: [address, region].filter(Boolean).join(', '), byName: false },
+    { q: [name, locality, region].filter(Boolean).join(', '), byName: true },
+  ].filter((t) => t.q && t.q.length > 3);
+
+  for (const t of tries) {
+    let rows;
+    try {
+      rows = await search(t.q, 3, countryCode);
+    } catch {
+      return null;   // the geocoder is down: no point is better than a wrong one
+    }
+    const hit = rows.find((r) => (r.rank ?? 0) >= 28
+      && (!t.byName || nameSimilarity(r.label, name) >= 0.8));
+    if (hit) return { lat: hit.lat, lng: hit.lng, kind: hit.kind, rank: hit.rank, query: t.q, byName: t.byName };
+  }
+  return null;
+}

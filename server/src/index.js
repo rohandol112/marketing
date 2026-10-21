@@ -10,11 +10,13 @@ import { HTTPException } from 'hono/http-exception';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 
-import config from './config.js';
+import config, { discoverySource } from './config.js';
 import knex from './db/knex.js';
 import { contextMiddleware } from './middleware/context.js';
 import { HttpError } from './lib/util.js';
 import { startWorker, requeueStale, stopWorker } from './lib/queue.js';
+import { llmStatus, probeGeminiKey } from './lib/llm.js';
+import { thinkingFor } from './lib/mapsDiscovery.js';
 
 // Importing the services registers their queue handlers.
 import './services/discovery.js';
@@ -144,16 +146,25 @@ async function boot() {
   }
 
   await requeueStale();
+  // Ask Google once, up front, whether the key works. A refused key is logged
+  // here in plain words instead of surfacing later as sweeps that find nothing.
+  await probeGeminiKey().catch(() => {});
   // Audits and Maps lookups are network-bound and mostly waiting; one at a
   // time made a 300-lead re-audit take an afternoon.
   startWorker({ concurrency: config.worker.concurrency });
   startMaintenanceScheduler();
 
   serve({ fetch: app.fetch, port: config.port }, (info) => {
+    const llm = llmStatus();
     console.log('\n  DudeAI Sales Agent API');
     console.log('  http://localhost:' + info.port);
+    console.log('  discovery: ' + discoverySource());
     console.log('  places: ' + (config.places.mock ? 'MOCK (no API key)' : 'live, ' + config.places.fieldTier + ' tier'));
-    console.log('  gemini: ' + (config.gemini.mock ? 'MOCK (no API key)' : config.gemini.modelMain + ' / ' + config.gemini.modelFast));
+    console.log('  llm: ' + llm.provider + (llm.mock ? ' MOCK (no API key)' : ', ' + llm.modelMain + ' / ' + llm.modelFast)
+      + (llm.keyAccepted === false ? ' - KEY REFUSED: ' + llm.keyProblem : llm.keyAccepted ? ', key OK' : ''));
+    const thinking = thinkingFor(llm.modelMain);
+    console.log('  maps grounding: ' + (thinking ? 'thinking ' + thinking.thinkingLevel : llm.modelMain + ' default thinking') + ', '
+      + config.maps.concurrency + ' calls / ' + config.maps.categoryConcurrency + ' categories at a time');
     console.log('  pagespeed: ' + (config.pagespeed.enabled ? 'on' : 'off') + '\n');
   });
 }

@@ -3,10 +3,10 @@ import knex from '../db/knex.js';
 import config, { discoverySource } from '../config.js';
 import { CATEGORIES, PRESETS, GROUPS } from '../lib/categories.js';
 import { STAGES, STAGE_META, LOSS_REASONS } from '../services/leads.js';
-import { llmStatus } from '../lib/llm.js';
+import { llmStatus, geminiKeyStatus, geminiSearchAvailable, modelsFor, activeProvider } from '../lib/llm.js';
 import { queueStats, queueDepth } from '../lib/queue.js';
 import { estimateSweep } from '../lib/places.js';
-import { mapsLookupAvailable } from '../lib/mapsDiscovery.js';
+import { mapsLookupAvailable, thinkingFor } from '../lib/mapsDiscovery.js';
 import { instagramAvailable } from '../lib/instagram.js';
 import { EXCLUSION_LABELS } from '../lib/classify.js';
 
@@ -25,6 +25,12 @@ app.get('/bootstrap', async (c) => {
     knex('areas').where({ tenant_id: tenantId }).orderBy('created_at', 'desc'),
     knex('scoring_configs').where({ tenant_id: tenantId, active: true }).orderBy('version', 'desc').first(),
   ]);
+
+  // Why a Gemini-backed source is off, in words a person can act on.
+  const key = geminiKeyStatus();
+  const geminiProblem = !config.gemini.apiKey ? 'No GEMINI_API_KEY set'
+    : key.ok === false ? 'Google refused the key: ' + key.reason : null;
+  const socialMethod = instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? 'gemini_search_grounding' : 'none';
 
   return c.json({
     tenant,
@@ -47,14 +53,16 @@ app.get('/bootstrap', async (c) => {
         label: 'Google Maps (via Gemini)',
         available: mapsLookupAvailable(),
         recommended: mapsLookupAvailable() && config.places.mock,
+        unavailableReason: mapsLookupAvailable() ? null : geminiProblem,
         note: 'Real Google Maps listings with rating, review count, phone and website - looked up, not recalled. The best source without a Places key.',
-        caveat: 'Each category is a few grounded Gemini calls. Names come back without coordinates; they are geocoded afterwards.',
+        caveat: 'Each category is ' + config.places.maxPages + ' grounded searches run side by side, about 20-30s a category. Names come back without coordinates; they are geocoded afterwards.',
       },
       {
         id: 'gemini',
         label: 'AI web search',
-        available: !config.gemini.mock,
-        recommended: !config.gemini.mock,
+        available: !config.gemini.mock && key.ok !== false,
+        recommended: !config.gemini.mock && key.ok !== false,
+        unavailableReason: geminiProblem,
         note: 'Widest coverage by far, and it knows businesses no directory lists. Then run Research and verify to check each one against live web search.',
         caveat: 'Measured: the model does NOT search for open-ended "list businesses here" prompts - it answers from memory, so every lead arrives unverified. Verification is a second, grounded step.',
       },
@@ -73,6 +81,7 @@ app.get('/bootstrap', async (c) => {
         label: 'Google Places',
         available: !config.places.mock,
         recommended: !config.places.mock,
+        unavailableReason: config.places.mock ? 'No GOOGLE_PLACES_API_KEY set' : null,
         note: 'Authoritative, with real ratings and review counts. The best data there is.',
         caveat: 'Needs an API key with billing. About $0.035 per call.',
       },
@@ -86,7 +95,9 @@ app.get('/bootstrap', async (c) => {
       maxPages: config.places.maxPages,
       mapsLookup: mapsLookupAvailable(),
       instagramLookup: instagramAvailable(),
-      socialLookup: instagramAvailable() || mapsLookupAvailable(),
+      socialLookup: socialMethod !== 'none',
+      socialMethod,
+      geminiProblem,
       mapsEnrichOnDiscovery: config.enrich.mapsOnDiscovery,
       maintenanceAuto: config.maintenance.auto,
     },
@@ -115,11 +126,17 @@ app.get('/health', async (c) => {
     },
     gemini: llmStatus(),
     pagespeed: { configured: config.pagespeed.enabled },
-    mapsLookup: { configured: mapsLookupAvailable() },
+    mapsLookup: {
+      configured: mapsLookupAvailable(),
+      // What the configured model is actually sent, not just the setting.
+      thinkingLevel: thinkingFor(modelsFor(activeProvider()).main)?.thinkingLevel || 'model default',
+      concurrency: config.maps.concurrency,
+      categoryConcurrency: config.maps.categoryConcurrency,
+    },
     instagram: { configured: instagramAvailable(), apiVersion: config.instagram.version },
     socialLookup: {
-      configured: instagramAvailable() || mapsLookupAvailable(),
-      method: instagramAvailable() ? 'meta_graph_api' : mapsLookupAvailable() ? 'gemini_search_grounding' : 'none',
+      configured: instagramAvailable() || geminiSearchAvailable(),
+      method: instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? 'gemini_search_grounding' : 'none',
     },
     maintenance: { auto: config.maintenance.auto, intervalHours: config.maintenance.intervalHours },
     queue: { ...queueStats(), depth: await queueDepth() },

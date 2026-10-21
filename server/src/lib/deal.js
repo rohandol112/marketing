@@ -33,6 +33,9 @@ export const DEFAULT_DEAL_CONFIG = {
 
 const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
+/** Appended to an urgent issue that rests on a search result rather than a source a person can trust. */
+export const UNCONFIRMED = ' (going by search - open the profile before you say it)';
+
 /** The one thing to open the call with, if there is something urgent. */
 export function urgentIssue(lead) {
   const audit = asObject(lead.website_audit);
@@ -56,7 +59,12 @@ export function urgentIssue(lead) {
   const ig = asObject(lead.social_audit).instagram;
   if (ig && ig.found) {
     const quiet = daysSince(ig.lastPostAt);
-    if (quiet !== null && quiet > 90) return 'Their Instagram has been silent for ' + quiet + ' days';
+    if (quiet !== null && quiet > 90) {
+      // A date read off a search result can be a pinned post or an old
+      // snippet; the rep looks before saying it to the owner.
+      return 'Their Instagram has been silent for ' + quiet + ' days'
+        + (ig.source === 'gemini_search_grounding' ? UNCONFIRMED : '');
+    }
   }
   return null;
 }
@@ -200,7 +208,8 @@ export function gapTagsFor(lead) {
   if (num(lead.ig_followers) !== null && lead.ig_followers < 1000) tags.add('low_instagram');
   if (audit.socialLinkCount === 0) tags.add('low_instagram');
   const ig = asObject(lead.social_audit).instagram;
-  if (ig && ig.found && (Number(ig.mediaCount) === 0 || (daysSince(ig.lastPostAt) ?? 0) > 60)) tags.add('low_instagram');
+  const noPosts = ig && ig.mediaCount !== null && ig.mediaCount !== undefined && ig.mediaCount !== '' && Number(ig.mediaCount) === 0;
+  if (ig && ig.found && (noPosts || (daysSince(ig.lastPostAt) ?? 0) > 60)) tags.add('low_instagram');
   if (reviews !== null && followers >= 0 && reviews / Math.max(followers, 1) > 1) tags.add('high_review_ratio');
 
   if (lead.runs_ads === false || (audit.tracking && !audit.tracking.adTracking)) tags.add('no_ads');

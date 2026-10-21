@@ -321,6 +321,23 @@ export function normalizeLocality(s) {
   return t;
 }
 
+/**
+ * A street address reduced to what identifies it: case, punctuation and the
+ * country name dropped. Null for anything too short to mean one building -
+ * "Kothrud, Pune" is a neighbourhood, not an address.
+ */
+export function addressKey(s) {
+  const k = String(s || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\bindia\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return k.length >= 20 && /\d/.test(k) ? k : null;
+}
+
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,24}$/;
 
 /** A deliverable-looking business address, or null. */
@@ -353,6 +370,75 @@ export function cleanInstagramHandle(raw) {
   if (INSTAGRAM_RESERVED.has(s.toLowerCase())) return null;
   if (/^\.|\.$|\.\./.test(s)) return null;
   return s.toLowerCase();
+}
+
+/**
+ * A count as people and pages write it: 1234, "1,234", "12.4K", "1.2M",
+ * "3.5 lakh", "10K+". Zero is an answer; anything unreadable is null, never a
+ * guess. ("12.4K" used to come out as 12: the suffix test wanted a space.)
+ */
+export function parseHumanCount(v) {
+  if (v === null || v === undefined || v === '' || typeof v === 'boolean') return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v >= 0 ? Math.round(v) : null;
+  const s = String(v).toLowerCase().replace(/,/g, '').trim();
+  const m = s.match(/^(?:about|around|approx\.?|over|~)?\s*(\d+(?:\.\d+)?)\s*(k|thousand|m|mn|million|lakh|lakhs|lac|cr|crore|crores)?\b\+?/);
+  if (!m) return null;
+  const mult = {
+    k: 1e3, thousand: 1e3, m: 1e6, mn: 1e6, million: 1e6, lakh: 1e5, lakhs: 1e5, lac: 1e5, cr: 1e7, crore: 1e7, crores: 1e7,
+  }[m[2]] || 1;
+  const n = Math.round(Number(m[1]) * mult);
+  return Number.isFinite(n) && n >= 0 && n < 1e10 ? n : null;
+}
+
+const COUNT = '(\\d[\\d,]*(?:\\.\\d+)?\\s*(?:k|m|mn|lakh|lac|cr)?)';
+
+/**
+ * The line Google shows for an Instagram profile, pasted by a rep:
+ *
+ *   "1,234 Followers, 56 Following, 78 Posts - See Instagram photos and videos
+ *    from Orion Dental (@orion_dental_specialities)"
+ *
+ * or the header copied off the profile itself ("78 posts 12.4K followers 56
+ * following"). This is the manual route to the numbers when Meta's API is not
+ * set up: ten seconds a lead, and the numbers are the ones a person saw.
+ */
+export function parseInstagramSnippet(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  const grab = (word) => {
+    const after = s.match(new RegExp(COUNT + '\\s*' + word + '\\b', 'i'));
+    if (after) return parseHumanCount(after[1]);
+    const before = s.match(new RegExp('\\b' + word + '\\s*[:\\-]?\\s*' + COUNT + '(?![\\w])', 'i'));
+    return before ? parseHumanCount(before[1]) : null;
+  };
+  const handleMatch = s.match(/instagram\.com\/([A-Za-z0-9._]{1,30})/i) || s.match(/\(@([A-Za-z0-9._]{1,30})\)/) || s.match(/(?:^|\s)@([A-Za-z0-9._]{1,30})\b/);
+  const out = {
+    handle: handleMatch ? cleanInstagramHandle(handleMatch[1]) : null,
+    followers: grab('followers'),
+    following: grab('following'),
+    posts: grab('posts'),
+  };
+  return out.handle || out.followers !== null || out.posts !== null ? out : null;
+}
+
+/**
+ * Whether an Instagram handle reads as this business's name: every
+ * distinctive word of the name is in it ("Orion Dental Specialities" ->
+ * orion_dental_specialities; "Perfect Smile Dental Clinic" ->
+ * perfectsmile_dentalclinic_pune). It cannot tell two cities apart - a Perfect
+ * Smile in another city matches too - so it decides whether a handle is
+ * written, never whether a follower count is.
+ */
+export function handleMatchesName(handle, name) {
+  const h = String(handle || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (h.length < 3) return false;
+  const words = normalizeName(name).split(' ').filter((w) => /^[a-z0-9]+$/.test(w) && w.length > 2);
+  const distinctive = words.filter((w) => !GENERIC_NAME_WORDS.has(w));
+  const use = distinctive.length ? distinctive : words;
+  if (!use.length || use.reduce((n, w) => n + w.length, 0) < 4) return false;
+  if (use.every((w) => h.includes(w))) return true;
+  // A near-spelling of the whole name still counts; initials never do.
+  return dice(h, use.join('')) >= 0.8;
 }
 
 export function addDays(iso, days) {

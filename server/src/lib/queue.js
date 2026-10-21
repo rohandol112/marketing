@@ -28,6 +28,37 @@ let running = false;
 let stopping = false;
 let activeJobs = 0;
 
+/**
+ * What the worker got through since the last report. Hundreds of audits and
+ * lookups follow a sweep; a line each is noise, silence looks like a hang. One
+ * line every half minute while there is work says it is alive and how far along.
+ */
+const REPORT_MS = 30000;
+let tally = { done: {}, failed: 0, retried: 0, ms: 0 };
+
+function count(kind, ok, ms, retrying) {
+  if (ok) tally.done[kind] = (tally.done[kind] || 0) + 1;
+  else if (retrying) tally.retried++;
+  else tally.failed++;
+  tally.ms += ms;
+}
+
+async function report() {
+  const kinds = Object.entries(tally.done);
+  const done = kinds.reduce((n, [, v]) => n + v, 0);
+  if (!done && !tally.failed && !tally.retried) return;
+  const t = tally;
+  tally = { done: {}, failed: 0, retried: 0, ms: 0 };
+  const waiting = await knex('jobs').where('status', 'queued').count('* as n').first().catch(() => null);
+  console.log(
+    '[queue] last ' + REPORT_MS / 1000 + 's: ' + done + ' done'
+    + (kinds.length ? ' (' + kinds.map(([k, v]) => k + ' ' + v).join(', ') + ')' : '')
+    + (t.retried ? ', ' + t.retried + ' to retry' : '') + (t.failed ? ', ' + t.failed + ' failed' : '')
+    + (done ? ', avg ' + (t.ms / (done + t.failed + t.retried) / 1000).toFixed(1) + 's' : '')
+    + (waiting ? '; ' + Number(waiting.n) + ' waiting' : '')
+  );
+}
+
 export function registerHandler(kind, fn) {
   handlers.set(kind, fn);
 }
@@ -124,12 +155,15 @@ async function runOne(job) {
       .catch((e) => console.warn('[queue] heartbeat failed for ' + job.id + ':', e.message));
   }, HEARTBEAT_MS);
 
+  const started = Date.now();
   try {
     await handler(job.payload || {}, job);
     await knex('jobs').where({ id: job.id }).update({ status: 'done', finished_at: now() });
+    count(job.kind, true, Date.now() - started);
   } catch (e) {
-    console.error('[queue] job ' + job.id + ' (' + job.kind + ') failed:', e.message);
     const retryable = job.attempts < 3 && e.retryable !== false;
+    console.error('[queue] ' + job.kind + ' ' + job.id + ' failed (attempt ' + job.attempts + (retryable ? ', will retry' : ', giving up') + '): ' + e.message);
+    count(job.kind, false, Date.now() - started, retryable);
     await knex('jobs').where({ id: job.id }).update({
       status: retryable ? 'queued' : 'failed',
       error: String(e.message).slice(0, 2000),
@@ -148,6 +182,7 @@ export async function startWorker({ pollMs = 1000, concurrency = 1 } = {}) {
   console.log('[queue] worker started (concurrency ' + concurrency + ')');
 
   let sinceReap = 0;
+  let lastReport = Date.now();
 
   while (!stopping) {
     try {
@@ -156,6 +191,10 @@ export async function startWorker({ pollMs = 1000, concurrency = 1 } = {}) {
       if (sinceReap >= 30000) {
         sinceReap = 0;
         await reapOrphans().catch((e) => console.warn('[queue] reap failed:', e.message));
+      }
+      if (Date.now() - lastReport >= REPORT_MS) {
+        lastReport = Date.now();
+        await report().catch(() => {});
       }
 
       if (activeJobs >= concurrency) {

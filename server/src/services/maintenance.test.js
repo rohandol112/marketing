@@ -106,3 +106,17 @@ test('the survivor fills its gaps from the others, and counts their branches', (
   assert.equal(p.activity_count, 3);
   assert.equal(p.last_activity_at, '2026-09-15T00:00:00.000Z');
 });
+
+test('the same name at the same street address is one shop, however its locality was written', () => {
+  const address = 'Vijayashree Society, Chaitanya Nagar, Kothrud, Pune, Maharashtra 411038, India';
+  const a = lead({ name: 'Shri Kulswamini Saraf', locality: 'Chaitanya Nagar, Kothrud', address, google_place_id: 'ChIJIyN40_b_wjsRfZS93m-4SeA' });
+  const b = lead({ name: 'Shri Kulswamini Saraf', locality: 'Kothrud', address: address.toUpperCase().replace(/,/g, ' ,'), google_place_id: 'ChIJv18214C_wh0RXfL0q8A9PeA' });
+  // Same name, another building: a second branch, not a duplicate.
+  const branch = lead({ name: 'Shri Kulswamini Saraf', locality: 'Karve Nagar', address: 'Shop 4, Dahanukar Colony, Karve Nagar, Pune, Maharashtra 411052, India' });
+  // "Kothrud, Pune" is a neighbourhood, too vague to be one building.
+  const vague1 = lead({ name: 'Om Jewellers', locality: 'Kothrud', address: 'Kothrud, Pune' });
+  const vague2 = lead({ name: 'Om Jewellers', locality: 'Paud Road', address: 'Kothrud, Pune' });
+  const clusters = findClusters([a, b, branch, vague1, vague2]);
+  assert.equal(clusters.length, 1);
+  assert.deepEqual(clusters[0].members.map((m) => m.id).sort(), [a.id, b.id].sort());
+});

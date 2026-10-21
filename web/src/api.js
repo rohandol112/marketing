@@ -76,6 +76,7 @@ export const api = {
   enrichInstagram: (id) => request('/leads/' + id + '/enrich-instagram', { method: 'POST' }),
   enrichSocial: (id) => request('/leads/' + id + '/enrich-social', { method: 'POST' }),
   enrichSocialBulk: (body) => request('/leads/enrich-social', { method: 'POST', body }),
+  recordInstagram: (id, body) => request('/leads/' + id + '/instagram', { method: 'POST', body }),
   setExclusion: (id, body) => request('/leads/' + id + '/exclusion', { method: 'POST', body }),
   resolveCandidate: (id, field, accept) => request('/leads/' + id + '/candidates/' + field, { method: 'POST', body: { accept } }),
   refreshStale: () => request('/leads/refresh-stale', { method: 'POST' }),

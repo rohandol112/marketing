@@ -6,6 +6,7 @@ import { searchAreas } from '../lib/geo.js';
 import { estimateSweep } from '../lib/places.js';
 import { enqueue } from '../lib/queue.js';
 import { PRESETS, CATEGORY_BY_ID } from '../lib/categories.js';
+import { ensureGeminiKey } from '../lib/llm.js';
 
 const app = new Hono();
 
@@ -79,6 +80,19 @@ app.post('/runs', async (c) => {
   const maxPages = Math.min(Math.max(Number(b.maxPages || config.places.maxPages), 1), 3);
 
   const source = b.source || discoverySource();
+
+  // A sweep that can only fail is refused with the reason, not queued to run
+  // its course and come back empty.
+  if (source === 'maps' || source === 'gemini') {
+    if (!config.gemini.apiKey) {
+      throw new HttpError(409, 'GEMINI_API_KEY is not set, so ' + (source === 'maps' ? 'Google Maps' : 'AI') + ' discovery cannot run. Pick OpenStreetMap, or add the key.');
+    }
+    const key = await ensureGeminiKey();
+    if (key.ok === false) {
+      throw new HttpError(409, 'Google refused GEMINI_API_KEY (' + key.reason + '). Put a working key from aistudio.google.com/apikey in GEMINI_API_KEY and restart - or sweep with OpenStreetMap meanwhile.');
+    }
+  }
+
   const estimate = estimateSweep({
     categoryCount: categories.length,
     maxPages,

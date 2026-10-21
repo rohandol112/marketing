@@ -2,8 +2,10 @@ import { Hono } from 'hono';
 import knex from '../db/knex.js';
 import { HttpError } from '../lib/util.js';
 import {
-  getPrecallBrief, getWhatsappOpener, extractNote, getNextStep, recordAction, suggestionQuality, getResearch, verifyByResearch, enrichLeadSocial,
+  getPrecallBrief, getWhatsappOpener, extractNote, getNextStep, recordAction, suggestionQuality, getResearch, verifyByResearch,
 } from '../services/ai.js';
+import { enrichSocialPresence } from '../services/enrichment.js';
+import { queueSocialEnrichment } from '../services/discovery.js';
 import { logActivity } from '../services/leads.js';
 import { llmStatus } from '../lib/llm.js';
 
@@ -43,28 +45,29 @@ app.post('/leads/:id/verify-by-research', async (c) => {
   }));
 });
 
-/** Find the social presence and tenure that Maps and the auditor cannot. */
+/**
+ * Find the social presence and tenure that Maps and the auditor cannot. Same
+ * path as /leads/:id/enrich-social, kept here for older callers.
+ */
 app.post('/leads/:id/enrich-social', async (c) => {
-  return c.json(await enrichLeadSocial({
-    tenantId: c.get('tenantId'),
-    leadId: c.req.param('id'),
-  }));
+  const lead = await knex('leads').where({ id: c.req.param('id'), tenant_id: c.get('tenantId') }).first('id');
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  return c.json(await enrichSocialPresence({ leadId: lead.id, force: true }));
 });
 
-/** Queue social enrichment across a filtered set. */
+/**
+ * Queue social enrichment across a filtered set. This used to queue every lead
+ * without a follower count - excluded ones, ones already queued, ones searched
+ * yesterday - so it shares the deduplicated queue now.
+ */
 app.post('/enrich-social', async (c) => {
-  const tenantId = c.get('tenantId');
   const b = await c.req.json().catch(() => ({}));
-  const { enqueue } = await import('../lib/queue.js');
-
-  let q = knex('leads').where({ tenant_id: tenantId }).whereNull('ig_followers');
-  if (Array.isArray(b.ids) && b.ids.length) q = q.whereIn('id', b.ids);
-  const rows = await q.limit(Number(b.limit || 100)).select('id');
-
-  for (const r of rows) {
-    await enqueue({ tenantId, kind: 'enrich_social', payload: { leadId: r.id, tenantId }, priority: 150 });
-  }
-  return c.json({ queued: rows.length });
+  const r = await queueSocialEnrichment({
+    tenantId: c.get('tenantId'),
+    ids: Array.isArray(b.ids) ? b.ids : null,
+    limit: Math.min(Number(b.limit || 100), 500),
+  });
+  return c.json({ queued: r.queued, available: r.available });
 });
 
 app.get('/leads/:id/whatsapp', async (c) => {
