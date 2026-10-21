@@ -41,6 +41,7 @@ export const PRIORITY = {
   rescore_tenant: 50,
   enrich_maps: 160,
   enrich_instagram: 170,
+  enrich_social: 175,
   geocode_lead: 180,
   audit_lead: 200,
   maintenance: 250,

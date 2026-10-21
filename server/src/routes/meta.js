@@ -86,6 +86,7 @@ app.get('/bootstrap', async (c) => {
       maxPages: config.places.maxPages,
       mapsLookup: mapsLookupAvailable(),
       instagramLookup: instagramAvailable(),
+      socialLookup: instagramAvailable() || mapsLookupAvailable(),
       mapsEnrichOnDiscovery: config.enrich.mapsOnDiscovery,
       maintenanceAuto: config.maintenance.auto,
     },
@@ -116,6 +117,10 @@ app.get('/health', async (c) => {
     pagespeed: { configured: config.pagespeed.enabled },
     mapsLookup: { configured: mapsLookupAvailable() },
     instagram: { configured: instagramAvailable(), apiVersion: config.instagram.version },
+    socialLookup: {
+      configured: instagramAvailable() || mapsLookupAvailable(),
+      method: instagramAvailable() ? 'meta_graph_api' : mapsLookupAvailable() ? 'gemini_search_grounding' : 'none',
+    },
     maintenance: { auto: config.maintenance.auto, intervalHours: config.maintenance.intervalHours },
     queue: { ...queueStats(), depth: await queueDepth() },
   });

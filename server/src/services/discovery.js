@@ -593,11 +593,12 @@ export async function auditLead({ leadId, withPageSpeed = config.pagespeed.enabl
     updated_at: now(),
   });
 
-  // A handle on their own site is the cue to read the account's real numbers.
+  // A handle on their own site or business presence is the cue to enrich social numbers.
   const handle = patch.ig_handle || lead.ig_handle;
   const igChecked = asObject(lead.social_audit).instagram;
-  if (handle && instagramAvailable() && !merged.exclusion && (!igChecked || (daysSince(igChecked.checkedAt) ?? 99) > 14)) {
-    await enqueue({ tenantId: lead.tenant_id, kind: 'enrich_instagram', payload: { leadId } });
+  const canSocial = instagramAvailable() || mapsLookupAvailable();
+  if ((handle || lead.website) && canSocial && !merged.exclusion && (!igChecked || (daysSince(igChecked.checkedAt) ?? 99) > 14)) {
+    await enqueue({ tenantId: lead.tenant_id, kind: 'enrich_social', payload: { leadId, tenantId: lead.tenant_id } });
   }
 
   return evaluation;
@@ -709,3 +710,41 @@ registerHandler('enrich_social', async ({ leadId, tenantId }) => {
   const { enrichLeadSocial } = await import('./ai.js');
   await enrichLeadSocial({ tenantId, leadId });
 });
+
+/**
+ * Queue social media enrichment via Google Search grounding across a filtered set.
+ */
+export async function queueSocialEnrichment({ tenantId, ids = null, runId = null, limit = 100, onlyMissing = true, refresh = false }) {
+  const canSocial = instagramAvailable() || mapsLookupAvailable();
+  if (!canSocial) return { queued: 0, available: false };
+  const cutoff = addDays(now(), -14);
+
+  let q = knex('leads')
+    .where({ tenant_id: tenantId, disqualified: false })
+    .andWhere((qb) => qb.whereNull('exclusion').orWhere('exclusion', 'none'))
+    .whereNotExists(
+      knex('jobs')
+        .whereIn('jobs.status', ['queued', 'running'])
+        .andWhere('jobs.kind', 'enrich_social')
+        .andWhereRaw("jobs.payload->>'leadId' = leads.id")
+    );
+  if (Array.isArray(ids) && ids.length) q = q.whereIn('id', ids);
+  if (runId) q = q.where('run_id', runId);
+  if (onlyMissing) q = q.whereNull('ig_followers');
+  if (!refresh) {
+    q = q.andWhere((qb) =>
+      qb.whereRaw("social_audit->'instagram' IS NULL").orWhereRaw("(social_audit->'instagram'->>'checkedAt') < ?", [cutoff])
+    );
+  }
+
+  const rows = await q
+    .orderByRaw('case when phone_normalized is not null then 0 else 1 end')
+    .orderBy('confidence', 'desc')
+    .limit(Math.min(Number(limit) || 100, 500))
+    .select('id');
+
+  for (const r of rows) {
+    await enqueue({ tenantId, kind: 'enrich_social', payload: { leadId: r.id, tenantId }, priority: 175 });
+  }
+  return { queued: rows.length, available: true };
+}

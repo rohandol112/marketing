@@ -176,14 +176,30 @@ export async function enrichFromMaps({ leadId, refresh = false, force = false })
 export async function enrichInstagram({ leadId, force = false }) {
   const lead = await knex('leads').where({ id: leadId }).first();
   if (!lead) return { skipped: 'Lead no longer exists' };
-  if (!instagramAvailable()) {
-    const err = new HttpError(409, 'Instagram lookup is not configured. Set META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID.');
-    err.retryable = false;
-    throw err;
-  }
 
   const handle = cleanInstagramHandle(lead.ig_handle);
-  if (!handle) return { skipped: 'No Instagram handle on this lead yet' };
+
+  // If Meta Graph API is not configured or we have no handle, use Gemini Google Search grounding
+  if (!instagramAvailable() || !handle) {
+    if (mapsLookupAvailable()) {
+      const { enrichLeadSocial } = await import('./ai.js');
+      const res = await enrichLeadSocial({ tenantId: lead.tenant_id, leadId: lead.id });
+      const updated = await knex('leads').where({ id: leadId }).first();
+      const social = asObject(updated.social_audit);
+      return {
+        instagram: social.instagram || { found: false, reason: res.reason || 'Search grounding completed' },
+        written: res.filled > 0,
+        social_audit: social,
+        evaluation: res.evaluation,
+      };
+    }
+    if (!instagramAvailable()) {
+      const err = new HttpError(409, 'Instagram lookup is not configured. Set META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID or configure GEMINI_API_KEY for Google Search grounding.');
+      err.retryable = false;
+      throw err;
+    }
+    if (!handle) return { skipped: 'No Instagram handle on this lead yet' };
+  }
 
   const social = asObject(lead.social_audit);
   const age = daysSince(social.instagram && social.instagram.checkedAt);

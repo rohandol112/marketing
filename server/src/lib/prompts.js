@@ -218,48 +218,58 @@ export async function researchBusiness({ lead }) {
 
 const SOCIAL_SHAPE = {
   instagram_handle: 'handle without @, or null',
-  instagram_followers: 'number only, from a page you can cite, else null',
-  facebook_handle: 'page name or null',
-  facebook_followers: 'number or null',
+  instagram_name: 'profile name or null',
+  instagram_followers: 'follower count as integer number, or null',
+  instagram_following: 'following count as integer number, or null',
+  instagram_posts: 'total number of posts as integer number, or null',
+  instagram_last_post_date: 'YYYY-MM-DD date string of latest post, or null',
+  instagram_url: 'https://www.instagram.com/{handle}/ or null',
+  facebook_url: 'facebook page URL or null',
+  facebook_name: 'facebook page name or null',
+  facebook_followers: 'facebook followers or page likes count as integer number, or null',
   linkedin_url: 'company page URL or null',
-  linkedin_followers: 'number or null',
+  linkedin_followers: 'linkedin follower count as integer number, or null',
+  youtube_url: 'youtube channel URL or null',
+  youtube_subscribers: 'subscriber count as integer number, or null',
   years_in_business: 'number of years trading, or null',
   founded_year: 'four digit year, or null',
   locations_count: 'how many branches or outlets, or null',
-  evidence: 'one line naming where the follower numbers came from',
+  evidence: 'one line naming where the follower numbers and accounts were found with URLs',
 };
 
 const SOCIAL_SYSTEM = [
-  'You find the public social media presence of a local business.',
+  'You find the public social media presence of a local business using Google Search.',
   '',
   'Rules:',
-  '1. Search before answering. Report only what you actually found.',
-  '2. Follower counts must come from a page you saw. Never estimate, never round a number you did not read. null is the correct answer when unsure.',
-  '3. Make sure it is the right business - same name AND same city. A national brand with a similar name is the wrong answer.',
-  '4. Never return a phone number or an email address here.',
-  '5. If you find nothing, return nulls. An empty honest answer is worth more than a plausible invented one.',
+  '1. Search before answering. Report only what you actually found from Google Search results.',
+  '2. Search for the business name and location across Instagram, Facebook, and LinkedIn.',
+  '3. Follower counts and post counts must come from a real page snippet or profile you read. Never estimate, never round a number you did not read. null is the correct answer when unsure.',
+  '4. If you find their Instagram, extract the handle, follower count, total posts, and the date of their most recent post.',
+  '5. Make sure it is the right business - same name AND same city/locality. A national brand or unrelated entity with a similar name is NOT a match.',
+  '6. Never return a phone number or an email address here.',
+  '7. If you find nothing for a field, return null. An empty honest answer is worth more than a plausible invented one.',
 ].join('\n');
 
 /**
- * Instagram and LinkedIn follower counts have no lawful third-party API worth
- * building on: the Graph API needs the business to grant access, and scraping
- * profiles breaks Meta terms and gets blocked within weeks. Search is the one
- * route that stays legitimate and keeps working.
+ * Social media presence via Gemini Google Search grounding.
  *
- * It is deliberately narrower than researchBusiness - one job, small prompt,
- * cheap enough to run over a whole sweep.
+ * Discovers Instagram handles, followers, post counts, recency, Facebook,
+ * LinkedIn, YouTube, and trading longevity without needing third-party tokens.
  */
 export async function enrichSocial({ lead }) {
   const where = [lead.locality, lead.region].filter(Boolean).join(', ');
   const user = [
-    'Find the social media presence of this business.',
+    'Find the social media presence and follower counts for this business using Google Search.',
     'Name: ' + lead.name,
     'Type: ' + (lead.category || 'local business'),
     'Location: ' + (where || lead.address || 'unknown'),
     lead.website ? 'Website: ' + lead.website : '',
+    lead.ig_handle ? 'Known Instagram handle: @' + lead.ig_handle : '',
     '',
-    'Find their Instagram, Facebook and LinkedIn, with follower counts where a page shows them.',
-    'Also find how long they have been trading and how many branches they have.',
+    'Search for: "' + lead.name + '" ' + (where || '') + ' instagram facebook linkedin',
+    'Find their official Instagram (handle, followers, total posts, date of last post).',
+    'Find their Facebook page (URL, follower/like count) and LinkedIn company page (URL, followers).',
+    'Also find how long they have been trading (founded year or years in business) and number of branches/locations if mentioned.',
   ].filter(Boolean).join('\n');
 
   return generateGrounded({
@@ -269,8 +279,11 @@ export async function enrichSocial({ lead }) {
     temperature: 0.1,
     raw: true,
     fallback: () => ({
-      instagram_handle: null, instagram_followers: null,
-      linkedin_followers: null, years_in_business: null, locations_count: null,
+      instagram_handle: null, instagram_name: null, instagram_followers: null,
+      instagram_following: null, instagram_posts: null, instagram_last_post_date: null,
+      instagram_url: null, facebook_url: null, facebook_name: null, facebook_followers: null,
+      linkedin_url: null, linkedin_followers: null, youtube_url: null, youtube_subscribers: null,
+      years_in_business: null, founded_year: null, locations_count: null, evidence: null,
     }),
   });
 }

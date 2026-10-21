@@ -567,12 +567,16 @@ function System() {
               </div>
             </dd>
 
-            <dt>Instagram</dt>
+            <dt>Instagram & Social</dt>
             <dd>
-              {health.instagram?.configured ? <span className="badge a">on</span> : <span className="badge">off</span>}
+              {health.instagram?.configured || health.mapsLookup?.configured ? (
+                <span className="badge a">on{health.instagram?.configured ? ' (Meta API)' : ' (Gemini Search)'}</span>
+              ) : (
+                <span className="badge">off</span>
+              )}
               <div className="small faint" style={{ marginTop: 4 }}>
-                Followers, posts and last-post date from Instagram's own Business Discovery API. Set
-                META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID to switch it on.
+                Followers, posts and recency via Gemini Google Search Grounding (enabled via GEMINI_API_KEY).
+                Optionally set META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID for direct Meta API lookups.
               </div>
             </dd>
 

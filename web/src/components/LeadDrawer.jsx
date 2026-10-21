@@ -147,9 +147,13 @@ export default function LeadDrawer({ leadId, onClose, onChanged }) {
             {lead.maps_url && <a className="btn sm ghost" href={lead.maps_url} target="_blank" rel="noreferrer">Maps</a>}
             {lead.website && <a className="btn sm ghost" href={lead.website} target="_blank" rel="noreferrer">Site</a>}
             <div className="spacer" />
-            {app.modes.mapsLookup && <LookupButton label="Google Maps lookup" run={() => api.enrichMaps(lead.id)} onDone={refresh} describe={describeMaps} />}
-            {app.modes.instagramLookup && lead.ig_handle && (
-              <LookupButton label="Instagram stats" run={() => api.enrichInstagram(lead.id)} onDone={refresh} describe={describeInstagram} />
+            {(app.modes.instagramLookup || app.modes.mapsLookup) && (
+              <LookupButton
+                label={app.modes.instagramLookup && lead.ig_handle ? "Instagram stats" : "Find social presence"}
+                run={() => api.enrichInstagram(lead.id)}
+                onDone={refresh}
+                describe={describeInstagram}
+              />
             )}
           </div>
           {lead.phone && !lead.phone_normalized && (
@@ -204,9 +208,14 @@ function describeMaps(r) {
 
 function describeInstagram(r) {
   if (r.skipped) return r.skipped;
-  const ig = r.instagram || {};
-  if (!ig.found) return 'Instagram: ' + (ig.reason || 'not a public business account') + '.';
-  return '@' + ig.username + ': ' + Number(ig.followers || 0).toLocaleString() + ' followers' + (r.written ? ', saved.' : ' - check it is theirs below.');
+  const ig = r.instagram || (r.social_audit && r.social_audit.instagram) || {};
+  if (r.written || r.filled) {
+    const handle = ig.username || ig.handle || r.handle;
+    const followers = ig.followers != null ? Number(ig.followers).toLocaleString() + ' followers' : 'social presence';
+    return (handle ? '@' + handle + ': ' : '') + followers + ', saved.';
+  }
+  if (!ig.found) return 'Social search: ' + (ig.reason || r.reason || 'not found') + '.';
+  return '@' + (ig.username || ig.handle) + ': ' + Number(ig.followers || 0).toLocaleString() + ' followers - check details below.';
 }
 
 function LookupButton({ label, run, onDone, describe }) {
@@ -944,30 +953,56 @@ function AuditCard({ lead, onChanged }) {
   );
 }
 
-/** What Instagram itself says about their account. */
+/** What social media audits say about their account. */
 function SocialCard({ lead }) {
-  const ig = (lead.social_audit || {}).instagram;
-  if (!ig && !lead.ig_handle) return null;
+  const social = lead.social_audit || {};
+  const ig = social.instagram;
+  const fb = social.facebook;
+  const li = social.linkedin;
+  if (!ig && !fb && !li && !lead.ig_handle) return null;
   return (
     <div className="card">
-      <h3>Instagram</h3>
+      <h3>Social Media Presence</h3>
       {ig && ig.found ? (
         <div className="kv small">
-          <dt>Account</dt>
+          <dt>Instagram</dt>
           <dd>
-            <a href={'https://www.instagram.com/' + ig.username + '/'} target="_blank" rel="noreferrer">@{ig.username}</a>
+            <a href={'https://www.instagram.com/' + (ig.username || ig.handle) + '/'} target="_blank" rel="noreferrer">
+              @{ig.username || ig.handle}
+            </a>
             {ig.name ? ' · ' + ig.name : ''}
           </dd>
           <dt>Followers</dt><dd>{Number(ig.followers || 0).toLocaleString()}</dd>
-          <dt>Posts</dt>
-          <dd>{ig.mediaCount ?? '?'}{ig.postsLast30d != null ? ' · ' + ig.postsLast30d + ' in the last 30 days' : ''}</dd>
-          <dt>Last post</dt><dd>{ig.lastPostAt ? new Date(ig.lastPostAt).toLocaleDateString() : 'never'}</dd>
+          {ig.mediaCount != null && (
+            <><dt>Posts</dt><dd>{ig.mediaCount}{ig.postsLast30d != null ? ' · ' + ig.postsLast30d + ' in last 30d' : ''}</dd></>
+          )}
+          {ig.lastPostAt && (
+            <><dt>Last post</dt><dd>{new Date(ig.lastPostAt).toLocaleDateString()}</dd></>
+          )}
           {ig.engagementRate != null && <><dt>Engagement</dt><dd>{(ig.engagementRate * 100).toFixed(2)}% of followers per post</dd></>}
-          <dt>Checked</dt><dd>{new Date(ig.checkedAt).toLocaleDateString()}, from Instagram's API</dd>
+          <dt>Source</dt><dd>{ig.source === 'gemini_search_grounding' ? 'Google Search Grounding' : "Instagram's API"}</dd>
         </div>
       ) : (
         <div className="small muted">
-          {ig ? 'Instagram: ' + (ig.reason || 'not found') + '.' : '@' + lead.ig_handle + ' - numbers not looked up yet.'}
+          {ig ? 'Instagram: ' + (ig.reason || 'not found') + '.' : lead.ig_handle ? '@' + lead.ig_handle + ' - numbers not looked up yet.' : 'No Instagram account recorded.'}
+        </div>
+      )}
+      {fb && fb.found && (
+        <div className="kv small" style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+          <dt>Facebook</dt>
+          <dd>
+            {fb.url ? <a href={fb.url} target="_blank" rel="noreferrer">{fb.name || 'Facebook Page'}</a> : (fb.name || 'Found')}
+          </dd>
+          {fb.followers != null && <><dt>Followers</dt><dd>{Number(fb.followers).toLocaleString()}</dd></>}
+        </div>
+      )}
+      {li && li.found && (
+        <div className="kv small" style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+          <dt>LinkedIn</dt>
+          <dd>
+            {li.url ? <a href={li.url} target="_blank" rel="noreferrer">Company Page</a> : 'Found'}
+          </dd>
+          {li.followers != null && <><dt>Followers</dt><dd>{Number(li.followers).toLocaleString()}</dd></>}
         </div>
       )}
     </div>

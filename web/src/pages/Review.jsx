@@ -206,6 +206,16 @@ export default function Review() {
     } catch (e) { toast.error(e); } finally { setLookingUp(false); }
   };
 
+  const [enrichingSocial, setEnrichingSocial] = useState(false);
+  const enrichSocial = async () => {
+    setEnrichingSocial(true);
+    try {
+      const ids = selected.size ? [...selected] : undefined;
+      const r = await api.enrichSocialBulk({ ids, limit: ids ? ids.length : 100 });
+      toast.success(r.queued ? r.queued + ' social searches queued. Refresh in a few minutes.' : r.note || 'Nothing to enrich.');
+    } catch (e) { toast.error(e); } finally { setEnrichingSocial(false); }
+  };
+
   const q = QUEUES[queue];
   const selectedLeads = visible.filter((l) => selected.has(l.id));
 
@@ -218,9 +228,14 @@ export default function Review() {
         </div>
         <div className="page-head-actions">
           {app.modes.mapsLookup && ['hot', 'enrich', 'review'].includes(queue) && (
-            <button className="btn" onClick={lookUpOnMaps} disabled={lookingUp} title="Review count, rating, phone and trading status from Google Maps">
-              {lookingUp ? 'Queuing...' : 'Look up Google reviews' + (selected.size ? ' (' + selected.size + ')' : '')}
-            </button>
+            <>
+              <button className="btn" onClick={lookUpOnMaps} disabled={lookingUp} title="Review count, rating, phone and trading status from Google Maps">
+                {lookingUp ? 'Queuing...' : 'Look up Google reviews' + (selected.size ? ' (' + selected.size + ')' : '')}
+              </button>
+              <button className="btn" onClick={enrichSocial} disabled={enrichingSocial} title="Find Instagram, Facebook and LinkedIn presence and followers via Google Search">
+                {enrichingSocial ? 'Queuing...' : 'Find social presence' + (selected.size ? ' (' + selected.size + ')' : '')}
+              </button>
+            </>
           )}
           {queue === 'confirm' && visible.length > 0 && (
             <button className="btn" onClick={researchVerify} disabled={!!researching}>

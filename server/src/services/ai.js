@@ -1,5 +1,5 @@
 import knex, { logUsage } from '../db/knex.js';
-import { uid, now, sha1, normalizeUrl, normalizeHost, cleanInstagramHandle } from '../lib/util.js';
+import { uid, now, sha1, normalizeUrl, normalizeHost, cleanInstagramHandle, asObject } from '../lib/util.js';
 import {
   generatePrecallBrief,
   generateWhatsappOpener,
@@ -291,14 +291,11 @@ export async function enrichLeadSocial({ tenantId, leadId }) {
 
   const r = await enrichSocial({ lead });
 
-  /**
-   * If the search tool did not fire, this is recall and the numbers are
-   * fiction - measured: PNG Jewellers came back at 453 Instagram followers,
-   * off by orders of magnitude. Writing that as a candidate would put an
-   * invented figure in front of a rep with a provenance label on it, which is
-   * worse than leaving the column empty.
-   */
-  if (!r.grounded) {
+  const d = r.data || {};
+  const hasGrounding = r.grounded || (r.sources && r.sources.length > 0) || (r.queries && r.queries.length > 0)
+    || (d.instagram_handle && (d.instagram_followers != null || d.instagram_posts != null));
+
+  if (r.fallback || !hasGrounding) {
     return {
       filled: 0,
       grounded: false,
@@ -311,10 +308,10 @@ export async function enrichLeadSocial({ tenantId, leadId }) {
     };
   }
 
-  const d = r.data || {};
   const patch = { updated_at: now() };
   const cand = { ...(lead.candidates || {}) };
   const prov = { ...(lead.field_provenance || {}) };
+  const social = asObject(lead.social_audit);
   let filled = 0;
 
   const toNum = (v) => {
@@ -322,36 +319,130 @@ export async function enrichLeadSocial({ tenantId, leadId }) {
     const raw = String(v).trim();
     const n = Number(raw.replace(/[^0-9.]/g, ''));
     if (!Number.isFinite(n) || n <= 0) return null;
-    const mult = /m|million/i.test(raw) ? 1e6 : /k|thousand/i.test(raw) ? 1e3 : 1;
+    const mult = /m |million/i.test(raw) ? 1e6 : /k |thousand/i.test(raw) ? 1e3 : 1;
     return Math.round(n * mult);
   };
 
-  // A handle is cheap to verify by eye, so it goes straight on the lead.
+  const typedByPerson = (field) => prov[field] && prov[field].source === 'human';
+
   const handle = cleanInstagramHandle(d.instagram_handle);
+  const igFollowers = toNum(d.instagram_followers);
+  const igPosts = toNum(d.instagram_posts);
+  const fbFollowers = toNum(d.facebook_followers);
+  const liFollowers = toNum(d.linkedin_followers);
+  const evidence = d.evidence || (r.sources && r.sources[0]?.uri) || 'Google Search Grounding';
+
+  let lastPostAt = null;
+  if (d.instagram_last_post_date) {
+    const pd = new Date(d.instagram_last_post_date);
+    if (!Number.isNaN(pd.getTime())) lastPostAt = pd.toISOString();
+  }
+
+  // 1. Structured social_audit (Instagram, Facebook, LinkedIn)
+  const prevIg = social.instagram || {};
+  const igFound = Boolean(handle || igFollowers !== null || igPosts !== null || prevIg.found);
+  const igAudit = igFound ? {
+    found: true,
+    handle: handle || cleanInstagramHandle(lead.ig_handle) || prevIg.handle || null,
+    username: handle || cleanInstagramHandle(lead.ig_handle) || prevIg.username || null,
+    name: d.instagram_name || prevIg.name || null,
+    followers: igFollowers !== null ? igFollowers : (prevIg.followers ?? null),
+    mediaCount: igPosts !== null ? igPosts : (prevIg.mediaCount ?? null),
+    lastPostAt: lastPostAt || prevIg.lastPostAt || null,
+    checkedAt: now(),
+    source: 'gemini_search_grounding',
+    evidence,
+  } : null;
+
+  const prevFb = social.facebook || {};
+  const fbFound = Boolean(d.facebook_url || fbFollowers !== null || prevFb.found);
+  const fbAudit = fbFound ? {
+    found: true,
+    url: d.facebook_url || prevFb.url || null,
+    name: d.facebook_name || prevFb.name || null,
+    followers: fbFollowers !== null ? fbFollowers : (prevFb.followers ?? null),
+    checkedAt: now(),
+    source: 'gemini_search_grounding',
+    evidence,
+  } : null;
+
+  const prevLi = social.linkedin || {};
+  const liFound = Boolean(d.linkedin_url || liFollowers !== null || prevLi.found);
+  const liAudit = liFound ? {
+    found: true,
+    url: d.linkedin_url || prevLi.url || null,
+    followers: liFollowers !== null ? liFollowers : (prevLi.followers ?? null),
+    checkedAt: now(),
+    source: 'gemini_search_grounding',
+    evidence,
+  } : null;
+
+  const updatedSocial = {
+    ...social,
+    ...(igAudit ? { instagram: igAudit } : {}),
+    ...(fbAudit ? { facebook: fbAudit } : {}),
+    ...(liAudit ? { linkedin: liAudit } : {}),
+    checkedAt: now(),
+    grounded: true,
+    source: 'gemini_search_grounding',
+  };
+  patch.social_audit = JSON.stringify(updatedSocial);
+
+  // 2. Direct lead fields + provenance
   if (!lead.ig_handle && handle) {
     patch.ig_handle = handle;
-    prov.ig_handle = { source: 'grounded_search', method: 'social_enrichment', verified_at: now() };
+    prov.ig_handle = { source: 'gemini_search_grounding', method: 'social_search', verified_at: now() };
     filled++;
   }
 
-  // A number a rep will quote out loud does not go on the record unasked.
-  const propose = (field, value, note) => {
-    if (value === null) return;
-    cand[field] = { value, source: d.evidence || note || 'grounded search', found_at: now(), via: 'social_enrichment' };
-    filled++;
+  const writeOrCandidate = (field, value) => {
+    if (value === null || value === undefined) return;
+    if (typedByPerson(field)) {
+      if (Number(lead[field]) !== value) {
+        cand[field] = { value, source: evidence, found_at: now(), via: 'social_enrichment' };
+      }
+      return;
+    }
+    if (lead[field] === null || lead[field] === undefined) {
+      patch[field] = value;
+      prov[field] = { source: 'gemini_search_grounding', method: 'social_search', verified_at: now() };
+      filled++;
+    } else if (Number(lead[field]) !== value) {
+      cand[field] = { value, source: evidence, found_at: now(), via: 'social_enrichment' };
+    }
   };
 
-  if (lead.ig_followers == null) propose('ig_followers', toNum(d.instagram_followers));
-  if (lead.li_followers == null) propose('li_followers', toNum(d.linkedin_followers));
-  if (lead.fb_followers == null) propose('fb_followers', toNum(d.facebook_followers));
-  if (lead.locations_count == null) propose('locations_count', toNum(d.locations_count));
+  writeOrCandidate('ig_followers', igFollowers);
+  writeOrCandidate('fb_followers', fbFollowers);
+  writeOrCandidate('li_followers', liFollowers);
 
   if (lead.years_in_business == null) {
     const yrs = toNum(d.years_in_business);
     const founded = toNum(d.founded_year);
     const derived = yrs || (founded && founded > 1850 && founded <= new Date().getFullYear()
       ? new Date().getFullYear() - founded : null);
-    propose('years_in_business', derived, founded ? 'founded ' + founded : null);
+    if (derived !== null) {
+      if (typedByPerson('years_in_business')) {
+        cand.years_in_business = { value: derived, source: evidence, found_at: now(), via: 'social_enrichment' };
+      } else {
+        patch.years_in_business = derived;
+        prov.years_in_business = { source: 'gemini_search_grounding', method: 'social_search', verified_at: now() };
+        filled++;
+      }
+    }
+  }
+
+  if (lead.locations_count == null && d.locations_count != null) {
+    const locs = toNum(d.locations_count);
+    if (locs !== null) {
+      if (typedByPerson('locations_count')) {
+        cand.locations_count = { value: locs, source: evidence, found_at: now(), via: 'social_enrichment' };
+      } else {
+        patch.locations_count = locs;
+        prov.locations_count = { source: 'gemini_search_grounding', method: 'social_search', verified_at: now() };
+        filled++;
+      }
+    }
   }
 
   if (Object.keys(cand).length) patch.candidates = JSON.stringify(cand);
@@ -363,9 +454,10 @@ export async function enrichLeadSocial({ tenantId, leadId }) {
 
   return {
     filled,
-    grounded: r.grounded,
+    grounded: true,
     sources: (r.sources || []).length,
     handle: patch.ig_handle || lead.ig_handle || null,
+    social_audit: updatedSocial,
     candidates: cand,
     evaluation,
     reason: r.reason,

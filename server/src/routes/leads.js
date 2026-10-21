@@ -5,7 +5,7 @@ import {
   moveStage, reviewLeads, autoAssign, assignOnly, logActivity, updateLeadFields, isSuppressed, setExclusion,
   resolveCandidate, STAGES,
 } from '../services/leads.js';
-import { auditLead, rescoreLead, queueMapsEnrichment, refreshStaleLeads, tenantCountry } from '../services/discovery.js';
+import { auditLead, rescoreLead, queueMapsEnrichment, queueSocialEnrichment, refreshStaleLeads, tenantCountry } from '../services/discovery.js';
 import { enrichFromMaps, enrichInstagram } from '../services/enrichment.js';
 import { enqueue } from '../lib/queue.js';
 import { waLink, telLink, adLibraryLinks, whatsappNumber } from '../lib/wa.js';
@@ -700,6 +700,30 @@ app.post('/:id/enrich-instagram', async (c) => {
   const lead = await knex('leads').where({ id: c.req.param('id'), tenant_id: c.get('tenantId') }).first('id');
   if (!lead) throw new HttpError(404, 'Lead not found');
   return c.json(await enrichInstagram({ leadId: lead.id, force: true }));
+});
+
+app.post('/:id/enrich-social', async (c) => {
+  const lead = await knex('leads').where({ id: c.req.param('id'), tenant_id: c.get('tenantId') }).first('id');
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  const { enrichLeadSocial } = await import('../services/ai.js');
+  return c.json(await enrichLeadSocial({ tenantId: c.get('tenantId'), leadId: lead.id }));
+});
+
+app.post('/enrich-social', async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const r = await queueSocialEnrichment({
+    tenantId: c.get('tenantId'),
+    ids: Array.isArray(b.ids) ? b.ids : null,
+    limit: Math.min(Number(b.limit || 100), 500),
+    onlyMissing: b.onlyMissing !== false,
+  });
+  return c.json({
+    queued: r.queued,
+    available: r.available,
+    note: r.queued
+      ? 'Social presence lookups queued via Google Search grounding.'
+      : 'Nothing to look up: leads already have follower counts or were checked recently.',
+  });
 });
 
 /** Accept or dismiss a value a lookup found but left for a person to confirm. */
