@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import knex from '../db/knex.js';
-import { uid, now, HttpError } from '../lib/util.js';
-import { DEFAULT_SCORING_CONFIG } from '../lib/scoring.js';
+import config from '../config.js';
+import { uid, now, HttpError, phoneInfo, cleanEmail } from '../lib/util.js';
+import { DEFAULT_SCORING_CONFIG, mergeConfig } from '../lib/scoring.js';
 import { enqueue } from '../lib/queue.js';
+import { runMaintenance } from '../services/maintenance.js';
 
 const app = new Hono();
 
@@ -146,8 +148,11 @@ app.get('/scoring', async (c) => {
     .where({ tenant_id: c.get('tenantId'), active: true })
     .orderBy('version', 'desc')
     .first();
+  // A config saved before a weight existed is missing it. The scorer merges the
+  // defaults in; the editor has to see the same merged config, or the new
+  // fields read as undefined and the page cannot render them.
   return c.json({
-    config: row?.config || DEFAULT_SCORING_CONFIG,
+    config: mergeConfig(DEFAULT_SCORING_CONFIG, row?.config),
     version: row?.version || 0,
     defaults: DEFAULT_SCORING_CONFIG,
   });
@@ -208,16 +213,76 @@ app.get('/dnc', async (c) => {
 app.post('/dnc', async (c) => {
   const b = await c.req.json();
   if (!b.phone && !b.email) throw new HttpError(400, 'phone or email is required');
+
+  // Stored raw, a number typed "98220 12345" never matched a lead's
+  // +919822012345, and the business got called anyway.
+  let phone = null;
+  if (b.phone) {
+    const tenant = await knex('tenants').where({ id: c.get('tenantId') }).first('country_code');
+    const info = phoneInfo(b.phone, tenant?.country_code || '');
+    if (!info.valid) throw new HttpError(400, 'That phone number cannot be read: ' + info.reason);
+    phone = info.e164;
+  }
+  const email = b.email ? cleanEmail(b.email) : null;
+  if (b.email && !email) throw new HttpError(400, 'That does not look like an email address: ' + b.email);
+
   const row = {
     id: uid('dnc_'),
     tenant_id: c.get('tenantId'),
-    phone_normalized: b.phone || null,
-    email: b.email || null,
+    phone_normalized: phone,
+    email,
     reason: b.reason || null,
     created_at: now(),
   };
   await knex('dnc').insert(row);
   return c.json(row, 201);
+});
+
+/* ---------------------- data maintenance ---------------------- */
+
+/** What the cleanup has done, when it runs next, and how long things are kept. */
+app.get('/maintenance', async (c) => {
+  const tenantId = c.get('tenantId');
+  const [runs, pending] = await Promise.all([
+    knex('maintenance_runs').where({ tenant_id: tenantId }).orderBy('started_at', 'desc').limit(10),
+    knex('jobs').where({ tenant_id: tenantId, kind: 'maintenance' }).whereIn('status', ['queued', 'running']).first('id', 'status'),
+  ]);
+  const last = runs.find((r) => !r.dry_run && r.status === 'done');
+  const m = config.maintenance;
+  return c.json({
+    runs,
+    pending: pending || null,
+    auto: m.auto,
+    intervalHours: m.intervalHours,
+    nextDueAt: m.auto && last ? new Date(new Date(last.started_at).getTime() + m.intervalHours * 3600000).toISOString() : null,
+    retention: {
+      finishedJobsDays: m.jobRetentionDays,
+      failedJobsDays: m.failedJobRetentionDays,
+      usageDays: m.usageRetentionDays,
+      unusedAiDays: m.aiCacheRetentionDays,
+      rejectedLeadsDays: m.rejectedLeadRetentionDays,
+      emptyRunsDays: m.runRetentionDays,
+    },
+  });
+});
+
+/**
+ * A dry run computes the whole report and writes nothing, so it runs inline.
+ * A real one is queued: it can take a while on a large table.
+ */
+app.post('/maintenance/run', async (c) => {
+  const tenantId = c.get('tenantId');
+  const b = await c.req.json().catch(() => ({}));
+  if (b.dryRun !== false) {
+    return c.json(await runMaintenance({ tenantId, dryRun: true, trigger: 'manual' }));
+  }
+  const pending = await knex('jobs')
+    .where({ tenant_id: tenantId, kind: 'maintenance' })
+    .whereIn('status', ['queued', 'running'])
+    .first('id');
+  if (pending) return c.json({ queued: false, jobId: pending.id, note: 'A cleanup is already queued.' });
+  const jobId = await enqueue({ tenantId, kind: 'maintenance', payload: { tenantId, trigger: 'manual' }, priority: 40 });
+  return c.json({ queued: true, jobId }, 202);
 });
 
 export default app;

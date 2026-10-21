@@ -124,9 +124,17 @@ export default function FilterBar({ facets, value, onChange, resultCount, totalC
         <span
           className={'chip' + (f.hasPhone === 'true' ? ' on' : '')}
           onClick={() => set({ hasPhone: f.hasPhone === 'true' ? '' : 'true' })}
-          title="A number is already on file - these are the fastest to turn into calls"
+          title="A number that can actually be dialled is on file - the fastest to turn into calls"
         >
           Has phone {c && <span className="faint">{c.withPhone}</span>}
+        </span>
+
+        <span
+          className={'chip' + (f.hasMobile === 'true' ? ' on' : '')}
+          onClick={() => set({ hasMobile: f.hasMobile === 'true' ? '' : 'true' })}
+          title="A mobile number, or the WhatsApp number on their own website - message the owner today"
+        >
+          Mobile / WhatsApp {c && c.withMobile != null && <span className="faint">{c.withMobile}</span>}
         </span>
 
         <span

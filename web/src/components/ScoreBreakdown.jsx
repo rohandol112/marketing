@@ -15,6 +15,44 @@ const BLURB = {
 };
 
 /**
+ * "Can a big deal close here this week" - kept apart from the score above. It
+ * ranks the hot list and never qualifies anything.
+ */
+function DealCard({ deal }) {
+  const parts = [
+    ['Deal size', deal.size, 40, 'Category value, scale in reviews, number of branches'],
+    ['Visible pain', deal.pain, 35, 'How sellable the gaps are, plus anything urgent they can see today'],
+    ['Reachable owner', deal.reach, 25, 'A mobile or WhatsApp number, verified facts, owner-run'],
+  ];
+  return (
+    <div className="card">
+      <div className="row" style={{ marginBottom: 4 }}>
+        <h3 style={{ margin: 0 }}>Close this week</h3>
+        <div className="spacer" />
+        <strong>{deal.score}</strong>
+        <span className="faint small">/ 100 · {deal.band}</span>
+      </div>
+      <div className="small faint" style={{ marginBottom: 8 }}>
+        Size, visible pain and a reachable decision maker. Ranks the hot list only - it never qualifies a lead.
+      </div>
+      {parts.map(([label, pts, max, detail]) => (
+        <div className="signal" key={label}>
+          <span className="signal-pts signal-pos">{pts ?? 0}</span>
+          <span style={{ flex: 1 }}>
+            {label} <span className="faint">/ {max}</span>
+            <div className="signal-detail">{detail}</div>
+          </span>
+        </div>
+      ))}
+      {(deal.reasons || []).map((r, i) => <div key={'r' + i} className="gap-line">{r}</div>)}
+      {(deal.blockers || []).map((b, i) => (
+        <div key={'b' + i} className="small" style={{ color: 'var(--red)', marginTop: 4 }}>Held back: {b}</div>
+      ))}
+    </div>
+  );
+}
+
+/**
  * The score has to be arguable. A rep who cannot see why a lead is a 78 will
  * not trust the ranking, and a team lead cannot retune weights they cannot see.
  */
@@ -97,6 +135,8 @@ export default function ScoreBreakdown({ breakdown, lead }) {
           </div>
         );
       })}
+
+      {breakdown.deal && <DealCard deal={breakdown.deal} />}
 
       <div className="small faint">
         Scored with config v{breakdown.configVersion} on {new Date(breakdown.scoredAt).toLocaleString()}.

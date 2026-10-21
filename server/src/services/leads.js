@@ -1,6 +1,10 @@
 import knex from '../db/knex.js';
-import { uid, now, addDays, HttpError, normalizePhone } from '../lib/util.js';
-import { rescoreLead } from './discovery.js';
+import {
+  uid, now, addDays, HttpError, phoneFields, countryFor, normalizeUrl, normalizeHost, cleanEmail, cleanInstagramHandle,
+} from '../lib/util.js';
+import { EXCLUSION_KINDS, EXCLUSION_LABELS } from '../lib/classify.js';
+import { enqueue } from '../lib/queue.js';
+import { rescoreLead, buildDedupeKey, tenantCountry } from './discovery.js';
 import { recordProvenance } from './lifecycle.js';
 
 /**
@@ -212,10 +216,20 @@ export async function reviewLeads({ tenantId, ids, decision, userId, assignTo })
   } else {
     patch.stage = null;            // leaves it, if it was ever in it
     patch.assigned_to = null;
-    if (decision === 'rejected') patch.discovery_status = 'rejected';
+    if (decision === 'rejected') {
+      patch.discovery_status = 'rejected';
+      patch.disqualified = true;
+      patch.disqualify_reason = 'Rejected in review';
+    }
   }
 
   const n = await knex('leads').whereIn('id', ids).andWhere({ tenant_id: tenantId }).update(patch);
+
+  // Holding or approving a lead that was rejected has to put its discovery
+  // state back, and a rejection has to drop its deal score. Rescoring is how.
+  if (decision !== 'approved') {
+    for (const id of ids) await rescoreLead(id);
+  }
   return { updated: n };
 }
 
@@ -443,10 +457,46 @@ export async function updateLeadFields({ tenantId, leadId, patch, userId }) {
     throw new HttpError(400, 'Nothing to update.');
   }
 
-  if (clean.phone !== undefined) clean.phone_normalized = normalizePhone(clean.phone);
+  if (clean.email) {
+    const email = cleanEmail(clean.email);
+    if (!email) throw new HttpError(400, 'That does not look like an email address: ' + clean.email);
+    clean.email = email;
+  }
+  if (clean.ig_handle) {
+    const handle = cleanInstagramHandle(clean.ig_handle);
+    if (!handle) throw new HttpError(400, 'That does not look like an Instagram handle: ' + clean.ig_handle);
+    clean.ig_handle = handle;
+  }
+  if (clean.website_status !== undefined && clean.website_status !== null && !['none', 'unknown'].includes(clean.website_status)) {
+    // The auditor decides whether a site works. A person can only say there is
+    // none, or that it is not known.
+    throw new HttpError(400, 'website_status can only be set to "none" or "unknown" by hand - the auditor decides the rest.');
+  }
+
+  const human = Object.keys(clean);
+  if (clean.phone !== undefined) {
+    const country = countryFor(lead, await tenantCountry(tenantId));
+    Object.assign(clean, phoneFields(clean.phone, country));
+  }
+  let auditAfter = false;
+  if (clean.website !== undefined) {
+    const url = clean.website ? normalizeUrl(clean.website) : null;
+    if (clean.website && !url) throw new HttpError(400, 'That does not look like a website address: ' + clean.website);
+    clean.website = url;
+    clean.website_host = normalizeHost(url);
+    if (url && url !== lead.website) {
+      clean.website_status = null;       // checked again, not assumed
+      auditAfter = true;
+    } else if (!url && clean.website_status === undefined) {
+      clean.website_status = 'unknown';
+    }
+  }
+  if (clean.phone !== undefined || clean.name !== undefined || clean.locality !== undefined || clean.postal_code !== undefined) {
+    clean.dedupe_key = buildDedupeKey({ ...lead, ...clean });
+  }
 
   clean.field_provenance = JSON.stringify(
-    recordProvenance(lead.field_provenance, Object.keys(clean), {
+    recordProvenance(lead.field_provenance, human, {
       source: 'human',
       method: 'manual_audit',
       by: userId || 'unknown',
@@ -457,8 +507,73 @@ export async function updateLeadFields({ tenantId, leadId, patch, userId }) {
 
   await knex('leads').where({ id: leadId }).update(clean);
   await rescoreLead(leadId);
+  if (auditAfter) await enqueue({ tenantId, kind: 'audit_lead', payload: { leadId }, priority: 120 });
 
   return knex('leads').where({ id: leadId }).first();
+}
+
+/** Fields a found-but-unconfirmed value can be accepted into. */
+const CANDIDATE_FIELDS = new Set([
+  'phone', 'website', 'review_count', 'rating', 'ig_followers', 'li_followers', 'fb_followers',
+  'years_in_business', 'locations_count',
+]);
+
+/**
+ * Accept or dismiss a value a lookup found but would not write on its own -
+ * a phone from a cited page, a review count from a near-match on Maps, a
+ * follower count for an account that might not be theirs. Accepting writes it
+ * as a person's decision, with where it came from kept alongside.
+ */
+export async function resolveCandidate({ tenantId, leadId, field, accept, userId }) {
+  const lead = await knex('leads').where({ id: leadId, tenant_id: tenantId }).first();
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  const cand = { ...(lead.candidates || {}) };
+  const c = cand[field];
+  if (!c) throw new HttpError(404, 'Nothing found for ' + field + ' on this lead.');
+  if (accept && !CANDIDATE_FIELDS.has(field)) throw new HttpError(400, field + ' cannot be accepted from a lookup.');
+
+  delete cand[field];
+  if (!accept) {
+    await knex('leads').where({ id: leadId }).update({ candidates: JSON.stringify(cand), updated_at: now() });
+    return knex('leads').where({ id: leadId }).first();
+  }
+
+  // Write first: if the value is refused, the candidate is still there to look at.
+  await updateLeadFields({ tenantId, leadId, patch: { [field]: c.value }, userId });
+  const fresh = await knex('leads').where({ id: leadId }).first();
+  const prov = recordProvenance(fresh.field_provenance, [field], {
+    source: 'human', method: 'accepted_candidate', by: userId || 'unknown', confidence: 'high',
+  });
+  prov[field].evidence = c.source || null;
+  prov[field].found_via = c.via || null;
+  await knex('leads').where({ id: leadId }).update({ field_provenance: JSON.stringify(prov), candidates: JSON.stringify(cand) });
+  return knex('leads').where({ id: leadId }).first();
+}
+
+/**
+ * A person's call on whether a lead is a prospect.
+ *
+ * 'none' clears an exclusion for good: the detectors never set one on a lead a
+ * person has cleared, so a wrong "chain" or "government" call is fixed once.
+ */
+export async function setExclusion({ tenantId, leadId, exclusion, reason, userId }) {
+  const lead = await knex('leads').where({ id: leadId, tenant_id: tenantId }).first();
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  if (exclusion !== 'none' && !EXCLUSION_KINDS.includes(exclusion)) {
+    throw new HttpError(400, 'exclusion must be one of: none, ' + EXCLUSION_KINDS.join(', '));
+  }
+
+  const prov = recordProvenance(lead.field_provenance, ['exclusion'], {
+    source: 'human', method: 'review', by: userId || 'unknown', confidence: 'high',
+  });
+  await knex('leads').where({ id: leadId }).update({
+    exclusion,
+    exclusion_reason: exclusion === 'none' ? null : (reason || EXCLUSION_LABELS[exclusion]) + ' (set by hand)',
+    field_provenance: JSON.stringify(prov),
+    updated_at: now(),
+  });
+  const evaluation = await rescoreLead(leadId);
+  return { lead: await knex('leads').where({ id: leadId }).first(), evaluation };
 }
 
 /* ------------------------------------------------------------------ */

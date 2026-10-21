@@ -4,6 +4,7 @@ import { useApp, useToast } from '../App.jsx';
 import LeadDrawer from '../components/LeadDrawer.jsx';
 import FastVerify from '../components/FastVerify.jsx';
 import FilterBar from '../components/FilterBar.jsx';
+import { DealPip, money } from '../components/DealPip.jsx';
 import { ConfidencePip } from './Board.jsx';
 
 /**
@@ -13,6 +14,16 @@ import { ConfidencePip } from './Board.jsx';
  * by different people.
  */
 const QUEUES = {
+  hot: {
+    label: 'Close this week',
+    blurb:
+      'The deals worth chasing now: a business big enough to pay, a problem they can see today, and a number that ' +
+      'reaches the owner. Chains, government bodies and duplicates are already out. Ranked by deal readiness - ' +
+      'start at the top, and lead with the line under each name.',
+    params: { discoveryStatus: 'qualified,verified', status: 'pending_review', hasPhone: 'true', minDeal: '50', sort: 'deal' },
+    verifiable: true,
+    approvable: true,
+  },
   enrich: {
     label: 'Needs data',
     blurb:
@@ -35,7 +46,8 @@ const QUEUES = {
     blurb:
       'Verified, qualified, and waiting on your decision. Approving is the only thing that puts a lead ' +
       'onto a board. Verification alone never does, and assigning does not approve.',
-    params: { discoveryStatus: 'qualified', status: 'pending_review' },
+    params: { discoveryStatus: 'qualified', status: 'pending_review', sort: 'deal' },
+    approvable: true,
   },
   rejected: {
     label: 'Rejected',
@@ -48,7 +60,7 @@ export default function Review() {
   const app = useApp();
   const toast = useToast();
 
-  const [queue, setQueue] = useState('enrich');
+  const [queue, setQueue] = useState('hot');
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(new Set());
@@ -70,11 +82,13 @@ export default function Review() {
       const base = { ...QUEUES[queue].params, limit: 400 };
       const active = Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== '' && v != null));
 
+      // Counted, not listed: the badges used to be the length of a 400-row
+      // page, so a queue of 1,900 said 400.
       const [rows, facetData, matching, ...others] = await Promise.all([
         api.listLeads({ ...base, ...active }),
         api.leadFacets(base),
         api.leadCount({ ...base, ...active }),
-        ...Object.keys(QUEUES).map((k) => api.listLeads({ ...QUEUES[k].params, limit: 400 })),
+        ...Object.keys(QUEUES).map((k) => api.leadCount(QUEUES[k].params)),
       ]);
 
       setLeads(rows);
@@ -83,7 +97,7 @@ export default function Review() {
       setTotalInQueue(facetData?.completeness?.total ?? null);
       setSelected(new Set());
       const c = {};
-      Object.keys(QUEUES).forEach((k, idx) => { c[k] = others[idx].length; });
+      Object.keys(QUEUES).forEach((k, idx) => { c[k] = others[idx].count; });
       setCounts(c);
     } catch (e) { toast.error(e); }
     finally { setLoading(false); }
@@ -177,6 +191,31 @@ export default function Review() {
     setFastQueue(list);
   };
 
+  /**
+   * Google reviews, rating, phone and trading status for directory leads, from
+   * a Maps lookup each. Runs in the background; the selection, or the most
+   * valuable leads still missing a review count.
+   */
+  const [lookingUp, setLookingUp] = useState(false);
+  const lookUpOnMaps = async () => {
+    setLookingUp(true);
+    try {
+      const ids = selected.size ? [...selected] : undefined;
+      const r = await api.enrichMapsBulk({ ids, limit: ids ? ids.length : 150 });
+      toast.success(r.queued ? r.queued + ' Maps lookups queued. Refresh in a few minutes.' : r.note);
+    } catch (e) { toast.error(e); } finally { setLookingUp(false); }
+  };
+
+  const [enrichingSocial, setEnrichingSocial] = useState(false);
+  const enrichSocial = async () => {
+    setEnrichingSocial(true);
+    try {
+      const ids = selected.size ? [...selected] : undefined;
+      const r = await api.enrichSocialBulk({ ids, limit: ids ? ids.length : 100 });
+      toast.success(r.queued ? r.queued + ' social searches queued. Refresh in a few minutes.' : r.note || 'Nothing to enrich.');
+    } catch (e) { toast.error(e); } finally { setEnrichingSocial(false); }
+  };
+
   const q = QUEUES[queue];
   const selectedLeads = visible.filter((l) => selected.has(l.id));
 
@@ -188,6 +227,16 @@ export default function Review() {
           <p>{q.blurb}</p>
         </div>
         <div className="page-head-actions">
+          {app.modes.mapsLookup && ['hot', 'enrich', 'review'].includes(queue) && (
+            <>
+              <button className="btn" onClick={lookUpOnMaps} disabled={lookingUp} title="Review count, rating, phone and trading status from Google Maps">
+                {lookingUp ? 'Queuing...' : 'Look up Google reviews' + (selected.size ? ' (' + selected.size + ')' : '')}
+              </button>
+              <button className="btn" onClick={enrichSocial} disabled={enrichingSocial} title="Find Instagram, Facebook and LinkedIn presence and followers via Google Search">
+                {enrichingSocial ? 'Queuing...' : 'Find social presence' + (selected.size ? ' (' + selected.size + ')' : '')}
+              </button>
+            </>
+          )}
           {queue === 'confirm' && visible.length > 0 && (
             <button className="btn" onClick={researchVerify} disabled={!!researching}>
               {researching
@@ -240,7 +289,7 @@ export default function Review() {
           <div className="row wrap">
             <strong>{selected.size} selected</strong>
             <div className="spacer" />
-            {queue === 'review' && (
+            {q.approvable && (
               <>
                 <select value={assignTo} onChange={(e) => setAssignTo(e.target.value)} style={{ maxWidth: 180 }}>
                   <option value="">Approve without assigning</option>
@@ -280,7 +329,9 @@ export default function Review() {
         <div className="empty">
           <h3>Nothing here</h3>
           <p>
-            {queue === 'enrich'
+            {queue === 'hot'
+              ? 'Nothing ready to close yet. Look up Google reviews for the "Needs data" queue, or sweep a high-value category - leads land here once they have a phone, real demand and a visible gap.'
+              : queue === 'enrich'
               ? 'No leads waiting on data. Run a sweep in Discovery.'
               : queue === 'confirm'
                 ? 'Nothing unconfirmed. This only fills up if you run AI discovery.'
@@ -300,10 +351,11 @@ export default function Review() {
                 <th style={{ width: 50 }} title="What this category is worth to an agency">Value</th>
                 <th style={{ width: 55 }} title="Is this worth selling to">Opp</th>
                 <th style={{ width: 60 }} title="How much of this record is evidenced">Conf</th>
+                <th style={{ width: 60 }} title="Can a big deal close this week: size, visible pain, and a reachable owner">Deal</th>
                 <th>Business</th>
                 <th>Category</th>
                 <th>Known</th>
-                <th>Missing</th>
+                <th>{q.approvable ? 'Pitch' : 'Missing'}</th>
                 <th style={{ width: 80 }}></th>
               </tr>
             </thead>
@@ -327,21 +379,38 @@ export default function Review() {
                   </td>
                   <td><span className={'score ' + (l.tier || 'c').toLowerCase()}>{l.score}</span></td>
                   <td><ConfidencePip value={l.confidence} level={l.confidenceLevel} /></td>
+                  <td><DealPip deal={l.deal} score={l.deal_score} /></td>
                   <td>
                     <div style={{ fontWeight: 540 }}>{l.name}</div>
                     <div className="small faint">{l.locality || l.address}</div>
+                    {l.exclusionLabel && <div className="small" style={{ color: 'var(--red)' }}>{l.exclusionLabel}</div>}
                   </td>
                   <td className="small">{l.category}</td>
                   <td className="small">
                     <div className="row wrap" style={{ gap: 4 }}>
-                      {l.phone && <span className="badge a">phone</span>}
+                      {l.phone_type === 'mobile' && <span className="badge a" title="Takes WhatsApp">mobile</span>}
+                      {l.phone_normalized && l.phone_type !== 'mobile' && <span className="badge a">phone</span>}
+                      {l.phone && !l.phone_normalized && <span className="badge red" title="Cannot be dialled as stored">bad phone</span>}
                       {l.website && <span className="badge blue">site</span>}
                       {l.review_count != null && <span className="badge a">{l.review_count} rev</span>}
                       {!l.phone && !l.website && l.review_count == null && <span className="faint">-</span>}
                     </div>
                   </td>
-                  <td className="small faint" style={{ maxWidth: 200 }}>
-                    {(l.missingData || []).slice(0, 2).join(', ') || '-'}
+                  <td className="small" style={{ maxWidth: 240 }}>
+                    {q.approvable ? (
+                      <>
+                        {l.pitch ? <div>{l.pitch}</div> : <div className="faint">{(l.deal?.reasons || [])[0] || '-'}</div>}
+                        {l.package && (
+                          <div className="faint">
+                            {l.package.name} · {money(l.package.priceMin, l.package.currency)}
+                            {l.package.priceMax ? '–' + money(l.package.priceMax) : '+'}
+                            {l.package.billing === 'monthly' ? '/mo' : ''}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <span className="faint">{(l.missingData || []).slice(0, 2).join(', ') || '-'}</span>
+                    )}
                   </td>
                   <td className="right">
                     <button className="btn sm" onClick={() => setOpenId(l.id)}>Open</button>

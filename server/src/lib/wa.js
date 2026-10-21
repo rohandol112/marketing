@@ -41,6 +41,18 @@ export function adLibraryLinks(lead) {
   return links;
 }
 
+/**
+ * The number to WhatsApp: their mobile if that is what is on file, otherwise
+ * the WhatsApp number their own website publishes, otherwise whatever we have.
+ * A wa.me link to a landline opens a chat nobody will ever read.
+ */
+export function whatsappNumber(lead) {
+  const audit = lead && lead.website_audit && typeof lead.website_audit === 'object' ? lead.website_audit : {};
+  const fromSite = audit.contact && audit.contact.whatsapp;
+  if (lead.phone_type === 'mobile' && lead.phone_normalized) return lead.phone_normalized;
+  return fromSite || lead.phone_normalized || null;
+}
+
 export function telLink(phone) {
   const norm = normalizePhone(phone);
   return norm ? 'tel:' + norm : null;

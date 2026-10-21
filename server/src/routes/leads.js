@@ -1,13 +1,17 @@
 import { Hono } from 'hono';
 import knex from '../db/knex.js';
-import { HttpError, now } from '../lib/util.js';
+import { HttpError, uid, now, asObject, phoneInfo, countryFor, addDays } from '../lib/util.js';
 import {
-  moveStage, reviewLeads, autoAssign, assignOnly, logActivity, updateLeadFields, isSuppressed, STAGES,
+  moveStage, reviewLeads, autoAssign, assignOnly, logActivity, updateLeadFields, isSuppressed, setExclusion,
+  resolveCandidate, STAGES,
 } from '../services/leads.js';
-import { auditLead, rescoreLead } from '../services/discovery.js';
+import { auditLead, rescoreLead, queueMapsEnrichment, queueSocialEnrichment, refreshStaleLeads, tenantCountry } from '../services/discovery.js';
+import { enrichFromMaps, enrichInstagram } from '../services/enrichment.js';
 import { enqueue } from '../lib/queue.js';
-import { waLink, telLink, adLibraryLinks } from '../lib/wa.js';
+import { waLink, telLink, adLibraryLinks, whatsappNumber } from '../lib/wa.js';
 import { gapsFrom } from '../lib/scoring.js';
+import { recommendPackage, urgentIssue } from '../lib/deal.js';
+import { EXCLUSION_LABELS } from '../lib/classify.js';
 import { CATEGORIES } from '../lib/categories.js';
 import { recordProvenance, DISCOVERY_META } from '../services/lifecycle.js';
 
@@ -62,8 +66,19 @@ function applyLeadFilters(query, q) {
 
   // "What do we already have" - the fastest way to find the leads worth a rep's
   // fifteen seconds before anyone has enriched anything.
-  if (q.hasPhone === 'true') query = query.whereNotNull('leads.phone');
-  if (q.hasPhone === 'false') query = query.whereNull('leads.phone');
+  if (q.hasPhone === 'true') query = query.whereNotNull('leads.phone_normalized');
+  if (q.hasPhone === 'false') query = query.whereNull('leads.phone_normalized');
+  // Reachable on WhatsApp today: a mobile on file, or the WhatsApp number their
+  // own site publishes.
+  if (q.hasMobile === 'true') {
+    query = query.where((qb) =>
+      qb.where('leads.phone_type', 'mobile').orWhereRaw("leads.website_audit->'contact'->>'whatsapp' IS NOT NULL")
+    );
+  }
+  if (q.phoneType) query = query.whereIn('leads.phone_type', q.phoneType.split(','));
+  if (q.minDeal) query = query.where('leads.deal_score', '>=', Number(q.minDeal));
+  if (q.exclusion === 'any') query = query.whereNotNull('leads.exclusion').whereNot('leads.exclusion', 'none');
+  else if (q.exclusion) query = query.whereIn('leads.exclusion', q.exclusion.split(','));
   if (q.hasWebsite === 'true') query = query.whereNotNull('leads.website');
   if (q.hasWebsite === 'false') query = query.whereNull('leads.website');
   if (q.hasReviews === 'true') query = query.whereNotNull('leads.review_count');
@@ -91,7 +106,13 @@ app.get('/', async (c) => {
 
   const limit = Math.min(Number(q.limit || 200), 500);
 
-  if (q.sort === 'priority') {
+  if (q.sort === 'deal') {
+    // The hot list: what can close this week, biggest first.
+    query = query
+      .orderBy('leads.deal_score', 'desc')
+      .orderBy('leads.confidence', 'desc')
+      .orderBy('leads.score', 'desc');
+  } else if (q.sort === 'priority') {
     /**
      * Verification order.
      *
@@ -119,13 +140,26 @@ app.get('/', async (c) => {
     query = query.orderBy(sort, dir);
   }
 
-  const rows = await query.limit(limit).offset(Number(q.offset || 0));
+  const [rows, sales] = await Promise.all([
+    query.limit(limit).offset(Number(q.offset || 0)),
+    salesContext(c.get('tenantId')),
+  ]);
 
-  return c.json(rows.map(summarize));
+  return c.json(rows.map((r) => summarize(r, sales)));
 });
 
-function summarize(lead) {
+/** What the tenant sells, for recommending a package per lead. Two small tables. */
+async function salesContext(tenantId) {
+  const [packages, catalog] = await Promise.all([
+    knex('packages').where({ tenant_id: tenantId, active: true }).orderBy('sort_order'),
+    knex('service_catalog').where({ tenant_id: tenantId, active: true }).select('name', 'gap_tags'),
+  ]);
+  return { packages, catalog };
+}
+
+function summarize(lead, sales = null) {
   const conf = lead.confidence_breakdown || {};
+  const deal = asObject(lead.score_breakdown).deal || null;
   return {
     ...lead,
     gaps: gapsFrom(lead.score_breakdown).slice(0, 3),
@@ -134,9 +168,23 @@ function summarize(lead) {
     confidenceLevel: conf.level || null,
     missingData: (conf.missing || []).slice(0, 4).map((m) => m.label),
     candidates: lead.candidates || {},
+    deal: deal
+      ? {
+          score: lead.deal_score ?? deal.score,
+          band: deal.band,
+          size: deal.size,
+          pain: deal.pain,
+          reach: deal.reach,
+          reasons: deal.reasons || [],
+          blockers: deal.blockers || [],
+        }
+      : null,
+    pitch: urgentIssue(lead),
+    exclusionLabel: lead.exclusion && lead.exclusion !== 'none' ? EXCLUSION_LABELS[lead.exclusion] || lead.exclusion : null,
+    package: sales ? recommendPackage(lead, sales.packages, sales.catalog) : null,
     links: {
-      whatsapp: waLink(lead.phone),
-      tel: telLink(lead.phone),
+      whatsapp: waLink(whatsappNumber(lead)),
+      tel: telLink(lead.phone_normalized),
       ...adLibraryLinks(lead),
     },
   };
@@ -158,13 +206,16 @@ app.get('/board', async (c) => {
   if (q.tier) query = query.whereIn('leads.tier', q.tier.split(','));
   if (q.search) query = query.whereILike('leads.name', '%' + q.search + '%');
 
-  const rows = await query.orderBy('leads.score', 'desc').limit(1000);
+  const [rows, sales] = await Promise.all([
+    query.orderBy('leads.score', 'desc').limit(1000),
+    salesContext(c.get('tenantId')),
+  ]);
 
   const columns = {};
   for (const s of STAGES) columns[s] = [];
   for (const row of rows) {
     if (!row.stage) continue;   // belt and braces: the CHECK constraint already forbids this
-    (columns[row.stage] ||= []).push(summarize(row));
+    (columns[row.stage] ||= []).push(summarize(row, sales));
   }
 
   return c.json({
@@ -184,8 +235,9 @@ app.get('/board', async (c) => {
 const CSV_COLUMNS = [
   'id', 'name', 'category', 'normalized_category', 'value_tier',
   'discovery_status', 'status', 'stage', 'assignee',
-  'score', 'tier', 'confidence', 'confidence_level',
-  'review_count', 'rating', 'phone', 'email', 'website', 'website_status',
+  'score', 'tier', 'confidence', 'confidence_level', 'deal_score', 'pitch',
+  'review_count', 'rating', 'phone', 'phone_normalized', 'phone_type', 'email', 'website', 'website_status',
+  'exclusion', 'exclusion_reason',
   'ig_handle', 'ig_followers', 'li_followers', 'years_in_business', 'locations_count',
   'address', 'locality', 'region', 'postal_code', 'country_code', 'lat', 'lng',
   'external_source', 'external_id', 'google_place_id', 'maps_url',
@@ -217,6 +269,7 @@ export function leadsToCsv(rows) {
       assignee: l.assignee_name || '',
       gaps: gapsFrom(l.score_breakdown).slice(0, 3).join(' | '),
       missing_data: (conf.missing || []).slice(0, 4).map((m) => m.label).join(' | '),
+      pitch: urgentIssue(l) || '',
     };
     lines.push(CSV_COLUMNS.map((c) => csvCell(flat[c])).join(','));
   }
@@ -300,10 +353,12 @@ app.get('/facets', async (c) => {
     base()
       .select(
         knex.raw('count(*) as total'),
-        knex.raw('count(leads.phone) as with_phone'),
+        knex.raw('count(leads.phone_normalized) as with_phone'),
+        knex.raw("count(*) filter (where leads.phone_type = 'mobile' or leads.website_audit->'contact'->>'whatsapp' is not null) as with_mobile"),
         knex.raw('count(leads.website) as with_website'),
         knex.raw('count(leads.review_count) as with_reviews'),
-        knex.raw('count(*) filter (where leads.assigned_to is null) as unassigned')
+        knex.raw('count(*) filter (where leads.assigned_to is null) as unassigned'),
+        knex.raw('count(*) filter (where leads.deal_score >= 70 and leads.phone_normalized is not null) as hot')
       )
       .first(),
   ]);
@@ -329,9 +384,11 @@ app.get('/facets', async (c) => {
     completeness: {
       total: Number(totals.total),
       withPhone: Number(totals.with_phone),
+      withMobile: Number(totals.with_mobile),
       withWebsite: Number(totals.with_website),
       withReviews: Number(totals.with_reviews),
       unassigned: Number(totals.unassigned),
+      hot: Number(totals.hot),
     },
   });
 });
@@ -349,16 +406,17 @@ app.get('/:id', async (c) => {
     .first();
   if (!lead) throw new HttpError(404, 'Lead not found');
 
-  const [activities, history, suggestions, proposals, suppressed] = await Promise.all([
+  const [activities, history, suggestions, proposals, suppressed, sales] = await Promise.all([
     knex('activities').where({ lead_id: lead.id }).orderBy('occurred_at', 'desc').limit(50),
     knex('lead_stage_history').where({ lead_id: lead.id }).orderBy('at', 'desc').limit(50),
     knex('ai_suggestions').where({ lead_id: lead.id }).orderBy('created_at', 'desc').limit(20),
     knex('proposals').where({ lead_id: lead.id }).orderBy('created_at', 'desc'),
     isSuppressed(tenantId, lead),
+    salesContext(tenantId),
   ]);
 
   return c.json({
-    ...summarize(lead),
+    ...summarize(lead, sales),
     activities,
     history,
     proposals,
@@ -429,11 +487,18 @@ app.post('/:id/verify', async (c) => {
       'Add the phone number you found on Maps. Verifying without one leaves the rep nothing to call.'
     );
   }
+  const typed = phoneInfo(b.phone, countryFor(lead, await tenantCountry(tenantId)));
+  if (!typed.valid) {
+    throw new HttpError(400, 'That phone number cannot be dialled: ' + typed.reason + '. Copy it from Maps with the area code.');
+  }
 
   const patch = {};
   for (const k of ['name', 'phone', 'website', 'address', 'locality', 'rating', 'review_count', 'ig_followers', 'years_in_business']) {
     if (b[k] !== undefined && b[k] !== '') patch[k] = b[k];
   }
+  // "I looked and there is no website" is real information, and fast verify
+  // sends it. It used to be dropped right here.
+  if (b.website_status === 'none' && !patch.website) patch.website_status = 'none';
 
   await updateLeadFields({ tenantId, leadId, patch, userId: c.get('userId') });
 
@@ -463,7 +528,7 @@ app.post('/:id/verify', async (c) => {
   // Audit any website they supplied straight away - it is the difference
   // between "they told us a URL" and "we fetched it and it answered".
   const withSite = await knex('leads').where({ id: leadId }).first('website', 'website_status');
-  if (withSite.website && !['ok', 'placeholder', 'parked', 'broken'].includes(withSite.website_status)) {
+  if (withSite.website && !['ok', 'placeholder', 'parked', 'broken', 'protected', 'social_only'].includes(withSite.website_status)) {
     await auditLead({ leadId });
   }
 
@@ -567,14 +632,124 @@ app.post('/:id/dnc', async (c) => {
     created_at: now(),
   }).onConflict('id').merge();
 
-  await knex('leads').where({ id: lead.id }).update({
-    status: 'rejected',
-    stage: 'failed',
-    loss_reason: 'not_interested',
-    updated_at: now(),
-  });
+  // status 'rejected' with stage 'failed' breaks the rule that a lead with a
+  // stage is an approved one, so this used to fail on every lead. In the
+  // pipeline it is a lost deal; outside it, a rejected lead.
+  const inPipeline = lead.status === 'approved' && lead.stage;
+  if (inPipeline) {
+    await knex.transaction(async (trx) => {
+      await trx('leads').where({ id: lead.id }).update({
+        stage: 'failed', loss_reason: 'not_interested', next_due_at: null, updated_at: now(),
+      });
+      await trx('lead_stage_history').insert({
+        id: uid('sh_'),
+        tenant_id: tenantId,
+        lead_id: lead.id,
+        from_stage: lead.stage,
+        to_stage: 'failed',
+        by_user: c.get('userId') || null,
+        reason: 'Do not contact: ' + (b.reason || 'Requested by the business'),
+        at: now(),
+      });
+    });
+  } else {
+    await knex('leads').where({ id: lead.id }).update({
+      status: 'rejected',
+      stage: null,
+      discovery_status: 'rejected',
+      disqualified: true,
+      disqualify_reason: 'On the do-not-contact list',
+      assigned_to: null,
+      updated_at: now(),
+    });
+  }
+  await rescoreLead(lead.id);
 
   return c.json({ ok: true, message: lead.name + ' will not be contacted again.' });
+});
+
+/* ---------------------- enrichment and exclusion ---------------------- */
+
+/** Look leads up on Google Maps in the background: reviews, rating, phone, status. */
+app.post('/enrich-maps', async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const r = await queueMapsEnrichment({
+    tenantId: c.get('tenantId'),
+    ids: Array.isArray(b.ids) ? b.ids : null,
+    limit: Math.min(Number(b.limit || 100), 1000),
+    onlyMissing: b.onlyMissing !== false,
+  });
+  if (!r.available) {
+    throw new HttpError(409, 'Google Maps lookup needs LLM_PROVIDER=gemini and a GEMINI_API_KEY with Maps grounding enabled.');
+  }
+  return c.json({
+    queued: r.queued,
+    note: r.queued
+      ? 'One Maps lookup per lead, running in the background - high-ticket categories first.'
+      : 'Nothing to look up: these already have review counts, were checked in the last 30 days, or are excluded.',
+  });
+});
+
+app.post('/:id/enrich-maps', async (c) => {
+  const lead = await knex('leads').where({ id: c.req.param('id'), tenant_id: c.get('tenantId') }).first('id');
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  return c.json(await enrichFromMaps({ leadId: lead.id, force: true }));
+});
+
+app.post('/:id/enrich-instagram', async (c) => {
+  const lead = await knex('leads').where({ id: c.req.param('id'), tenant_id: c.get('tenantId') }).first('id');
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  return c.json(await enrichInstagram({ leadId: lead.id, force: true }));
+});
+
+app.post('/:id/enrich-social', async (c) => {
+  const lead = await knex('leads').where({ id: c.req.param('id'), tenant_id: c.get('tenantId') }).first('id');
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  const { enrichLeadSocial } = await import('../services/ai.js');
+  return c.json(await enrichLeadSocial({ tenantId: c.get('tenantId'), leadId: lead.id }));
+});
+
+app.post('/enrich-social', async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const r = await queueSocialEnrichment({
+    tenantId: c.get('tenantId'),
+    ids: Array.isArray(b.ids) ? b.ids : null,
+    limit: Math.min(Number(b.limit || 100), 500),
+    onlyMissing: b.onlyMissing !== false,
+  });
+  return c.json({
+    queued: r.queued,
+    available: r.available,
+    note: r.queued
+      ? 'Social presence lookups queued via Google Search grounding.'
+      : 'Nothing to look up: leads already have follower counts or were checked recently.',
+  });
+});
+
+/** Accept or dismiss a value a lookup found but left for a person to confirm. */
+app.post('/:id/candidates/:field', async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const lead = await resolveCandidate({
+    tenantId: c.get('tenantId'),
+    leadId: c.req.param('id'),
+    field: c.req.param('field'),
+    accept: b.accept !== false,
+    userId: c.get('userId'),
+  });
+  return c.json(summarize(lead));
+});
+
+/** A person's call: "this is not a chain", or "this is not a prospect". */
+app.post('/:id/exclusion', async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const r = await setExclusion({
+    tenantId: c.get('tenantId'),
+    leadId: c.req.param('id'),
+    exclusion: b.exclusion,
+    reason: b.reason,
+    userId: c.get('userId'),
+  });
+  return c.json(summarize(r.lead));
 });
 
 /* ---------------------- bulk refresh ---------------------- */
@@ -620,20 +795,31 @@ app.post('/geocode', async (c) => {
   });
 });
 
-/** Google's 30-day cache limit is a term, not a suggestion. */
+/**
+ * Google's 30-day cache limit is a term, not a suggestion. Google-sourced
+ * fields are looked up again; website audits older than a month are redone.
+ *
+ * The old version re-audited websites and never moved stale_after, so it
+ * queued the same 200 leads every time it ran.
+ */
 app.post('/refresh-stale', async (c) => {
   const tenantId = c.get('tenantId');
-  const stale = await knex('leads')
+  const google = await refreshStaleLeads({ tenantId, limit: 200 });
+
+  const cutoff = addDays(now(), -30);
+  const audits = await knex('leads')
     .where({ tenant_id: tenantId })
     .whereNotNull('website')
-    .andWhereRaw('(stale_after IS NULL OR stale_after < now())')
+    .andWhere((qb) => qb.whereNull('exclusion').orWhere('exclusion', 'none'))
+    .andWhere((qb) =>
+      qb.whereRaw("(website_audit->>'checkedAt') IS NULL").orWhereRaw("(website_audit->>'checkedAt') < ?", [cutoff])
+    )
     .limit(200)
     .select('id');
-
-  for (const l of stale) {
+  for (const l of audits) {
     await enqueue({ tenantId, kind: 'audit_lead', payload: { leadId: l.id } });
   }
-  return c.json({ queued: stale.length });
+  return c.json({ staleGoogleData: google.staleCount, mapsLookupsQueued: google.queued, auditsQueued: audits.length });
 });
 
 export default app;

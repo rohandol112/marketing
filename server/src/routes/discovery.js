@@ -117,6 +117,9 @@ app.post('/runs', async (c) => {
       fieldTier: b.fieldTier || config.places.fieldTier,
       minReviews: b.minReviews ?? 0,
       auditThreshold: b.auditThreshold,
+      // Look new directory leads up on Google Maps afterwards. Unset means the
+      // server default for the source.
+      enrichMaps: typeof b.enrichMaps === 'boolean' ? b.enrichMaps : undefined,
     }),
     status: 'queued',
     progress: JSON.stringify({ done: 0, total: categories.length, currentCategory: null }),

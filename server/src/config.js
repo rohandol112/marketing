@@ -30,6 +30,44 @@ export const config = {
     get mock() { return !this.apiKey; },
   },
 
+  /**
+   * Instagram's own Business Discovery API: follower count, post count and
+   * recent posts for any public business or creator account, looked up through
+   * your agency's Instagram business account. The legitimate route to the
+   * numbers - no scraping, no login cookies, nothing that breaks Meta's terms.
+   */
+  instagram: {
+    token: process.env.META_GRAPH_TOKEN || process.env.INSTAGRAM_ACCESS_TOKEN || '',
+    businessId: process.env.INSTAGRAM_BUSINESS_ID || '',
+    version: process.env.META_GRAPH_VERSION || 'v23.0',
+    get enabled() { return Boolean(this.token && this.businessId); },
+  },
+
+  enrich: {
+    // Look every new directory lead up on Google Maps after a sweep, for its
+    // review count, rating, phone and trading status.
+    mapsOnDiscovery: bool(process.env.MAPS_ENRICH_ON_DISCOVERY, true),
+    mapsMaxPerRun: num(process.env.MAPS_ENRICH_MAX_PER_RUN, 200),
+  },
+
+  overpassUrls: (process.env.OVERPASS_URLS || '')
+    .split(',').map((s) => s.trim()).filter(Boolean),
+
+  worker: {
+    concurrency: num(process.env.WORKER_CONCURRENCY, 3),
+  },
+
+  maintenance: {
+    auto: bool(process.env.MAINTENANCE_AUTO, true),
+    intervalHours: num(process.env.MAINTENANCE_INTERVAL_HOURS, 24),
+    jobRetentionDays: num(process.env.JOB_RETENTION_DAYS, 7),
+    failedJobRetentionDays: num(process.env.FAILED_JOB_RETENTION_DAYS, 30),
+    usageRetentionDays: num(process.env.USAGE_RETENTION_DAYS, 400),
+    aiCacheRetentionDays: num(process.env.AI_CACHE_RETENTION_DAYS, 45),
+    rejectedLeadRetentionDays: num(process.env.REJECTED_LEAD_RETENTION_DAYS, 60),
+    runRetentionDays: num(process.env.RUN_RETENTION_DAYS, 30),
+  },
+
   verboseAudit: bool(process.env.VERBOSE_AUDIT, false),
 };
 

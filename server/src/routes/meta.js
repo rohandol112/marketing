@@ -6,6 +6,9 @@ import { STAGES, STAGE_META, LOSS_REASONS } from '../services/leads.js';
 import { llmStatus } from '../lib/llm.js';
 import { queueStats, queueDepth } from '../lib/queue.js';
 import { estimateSweep } from '../lib/places.js';
+import { mapsLookupAvailable } from '../lib/mapsDiscovery.js';
+import { instagramAvailable } from '../lib/instagram.js';
+import { EXCLUSION_LABELS } from '../lib/classify.js';
 
 const app = new Hono();
 
@@ -40,6 +43,14 @@ app.get('/bootstrap', async (c) => {
     // source is usable is a server fact, not something the UI should guess.
     discoverySources: [
       {
+        id: 'maps',
+        label: 'Google Maps (via Gemini)',
+        available: mapsLookupAvailable(),
+        recommended: mapsLookupAvailable() && config.places.mock,
+        note: 'Real Google Maps listings with rating, review count, phone and website - looked up, not recalled. The best source without a Places key.',
+        caveat: 'Each category is a few grounded Gemini calls. Names come back without coordinates; they are geocoded afterwards.',
+      },
+      {
         id: 'gemini',
         label: 'AI web search',
         available: !config.gemini.mock,
@@ -53,7 +64,9 @@ app.get('/bootstrap', async (c) => {
         available: true,
         recommended: config.gemini.mock,
         note: 'Every result is a business a human surveyed and mapped, with real coordinates. It cannot invent one. Free, no key, no quota.',
-        caveat: 'Thin coverage: only about 8% carry a website and 20% a phone, and there are no ratings or review counts at all.',
+        caveat: mapsLookupAvailable()
+          ? 'No ratings or review counts of its own - each new lead is looked up on Google Maps after the sweep to fill them in.'
+          : 'Thin coverage: only about 8% carry a website and 20% a phone, and there are no ratings or review counts at all.',
       },
       {
         id: 'places',
@@ -71,7 +84,13 @@ app.get('/bootstrap', async (c) => {
       pagespeedEnabled: config.pagespeed.enabled,
       fieldTier: config.places.fieldTier,
       maxPages: config.places.maxPages,
+      mapsLookup: mapsLookupAvailable(),
+      instagramLookup: instagramAvailable(),
+      socialLookup: instagramAvailable() || mapsLookupAvailable(),
+      mapsEnrichOnDiscovery: config.enrich.mapsOnDiscovery,
+      maintenanceAuto: config.maintenance.auto,
     },
+    exclusionLabels: EXCLUSION_LABELS,
   });
 });
 
@@ -96,6 +115,13 @@ app.get('/health', async (c) => {
     },
     gemini: llmStatus(),
     pagespeed: { configured: config.pagespeed.enabled },
+    mapsLookup: { configured: mapsLookupAvailable() },
+    instagram: { configured: instagramAvailable(), apiVersion: config.instagram.version },
+    socialLookup: {
+      configured: instagramAvailable() || mapsLookupAvailable(),
+      method: instagramAvailable() ? 'meta_graph_api' : mapsLookupAvailable() ? 'gemini_search_grounding' : 'none',
+    },
+    maintenance: { auto: config.maintenance.auto, intervalHours: config.maintenance.intervalHours },
     queue: { ...queueStats(), depth: await queueDepth() },
   });
 });

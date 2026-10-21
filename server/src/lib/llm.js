@@ -503,8 +503,8 @@ export async function generateGrounded({ system, user, shape, fallback, temperat
     return {
       data: clean(parsed),
       model, provider,
-      grounded: Boolean(gm.groundingChunks?.length),
-      sources: (gm.groundingChunks || []).map((c) => ({ title: c.web?.title, uri: c.web?.uri })).filter((x) => x.title),
+      grounded: Boolean(gm.groundingChunks?.length || gm.webSearchQueries?.length || gm.searchEntryPoint),
+      sources: (gm.groundingChunks || []).map((c) => ({ title: c.web?.title, uri: c.web?.uri })).filter((x) => x.title || x.uri),
       queries: gm.webSearchQueries || [],
       tokensIn: json.usageMetadata?.promptTokenCount ?? null,
       tokensOut: json.usageMetadata?.candidatesTokenCount ?? null,
@@ -516,6 +516,10 @@ export async function generateGrounded({ system, user, shape, fallback, temperat
   } finally {
     limiter.release();
   }
+}
+
+export function geminiSearchAvailable() {
+  return activeProvider() === 'gemini' && Boolean(config.gemini.apiKey);
 }
 
 /* ------------------------------------------------------------------ */

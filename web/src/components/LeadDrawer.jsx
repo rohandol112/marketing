@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api.js';
 import { useApp, useToast } from '../App.jsx';
 import ScoreBreakdown from './ScoreBreakdown.jsx';
+import { DealPip, money } from './DealPip.jsx';
 
 const TABS = ['Brief', 'Research', 'Message', 'Activity', 'Score', 'Details'];
 
@@ -82,7 +83,27 @@ export default function LeadDrawer({ leadId, onClose, onChanged }) {
                 {lead.discoveryMeta?.label || lead.discovery_status}
               </span>
             </div>
+            {lead.deal && (
+              <div title={[...(lead.deal.reasons || []), ...(lead.deal.blockers || []).map((b) => 'Held back: ' + b)].join('\n')}>
+                <div className="stat-label">Close this week</div>
+                <div className="row" style={{ gap: 6 }}>
+                  <DealPip deal={lead.deal} score={lead.deal_score} />
+                  <span className="small muted">{lead.deal.band}</span>
+                </div>
+              </div>
+            )}
           </div>
+          {lead.package && !lead.exclusionLabel && lead.discovery_status !== 'rejected' && (
+            <div className="small" style={{ marginBottom: 6 }}>
+              <span className="faint">Pitch </span>
+              <strong>{lead.package.name}</strong>
+              <span className="muted">
+                {' · '}{money(lead.package.priceMin, lead.package.currency)}
+                {lead.package.priceMax ? '–' + money(lead.package.priceMax, lead.package.currency) : '+'}
+                {lead.package.billing === 'monthly' ? ' a month' : ''}
+              </span>
+            </div>
+          )}
           <div className="row wrap small muted">
             <span>{lead.category}</span>
             {lead.locality && <><span>·</span><span>{lead.locality}</span></>}
@@ -125,8 +146,30 @@ export default function LeadDrawer({ leadId, onClose, onChanged }) {
             {lead.links?.whatsapp && <a className="btn sm" href={lead.links.whatsapp} target="_blank" rel="noreferrer">WhatsApp</a>}
             {lead.maps_url && <a className="btn sm ghost" href={lead.maps_url} target="_blank" rel="noreferrer">Maps</a>}
             {lead.website && <a className="btn sm ghost" href={lead.website} target="_blank" rel="noreferrer">Site</a>}
+            <div className="spacer" />
+            {(app.modes.instagramLookup || app.modes.mapsLookup) && (
+              <LookupButton
+                label={app.modes.instagramLookup && lead.ig_handle ? "Instagram stats" : "Find social presence"}
+                run={() => api.enrichInstagram(lead.id)}
+                onDone={refresh}
+                describe={describeInstagram}
+              />
+            )}
           </div>
+          {lead.phone && !lead.phone_normalized && (
+            <div className="small" style={{ marginTop: 6, color: 'var(--red)' }}>
+              The phone on file ({lead.phone}) cannot be dialled as written - it is probably missing an area code.
+            </div>
+          )}
         </div>
+
+        {lead.pitch && !lead.exclusionLabel && lead.discovery_status !== 'rejected' && (
+          <div style={{ padding: '10px 18px 0' }}>
+            <div className="callout good"><strong>Open with:</strong> {lead.pitch}</div>
+          </div>
+        )}
+        {lead.exclusionLabel && <ExclusionBanner lead={lead} onDone={refresh} />}
+        {Object.keys(lead.candidates || {}).length > 0 && <Candidates lead={lead} onDone={refresh} />}
 
         {needsWork && <VerifyBanner lead={lead} onDone={refresh} />}
         {lead.suppressed && (
@@ -149,6 +192,118 @@ export default function LeadDrawer({ leadId, onClose, onChanged }) {
           {tab === 'Score' && <ScoreBreakdown breakdown={lead.score_breakdown} lead={lead} />}
           {tab === 'Details' && <DetailsTab lead={lead} onChanged={refresh} />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- lookups, exclusions, found values ---------------- */
+
+function describeMaps(r) {
+  if (r.skipped) return r.skipped;
+  if (r.match === 'strong') return 'Found on Google Maps' + (r.written?.length ? ' - updated ' + r.written.join(', ') : ' - nothing new') + '.';
+  if (r.match === 'medium') return 'Possibly found on Maps as "' + r.found?.name + '" - check the values below before accepting them.';
+  return 'Not found on Google Maps under this name.';
+}
+
+function describeInstagram(r) {
+  if (r.skipped) return r.skipped;
+  const ig = r.instagram || (r.social_audit && r.social_audit.instagram) || {};
+  if (r.written || r.filled) {
+    const handle = ig.username || ig.handle || r.handle;
+    const followers = ig.followers != null ? Number(ig.followers).toLocaleString() + ' followers' : 'social presence';
+    return (handle ? '@' + handle + ': ' : '') + followers + ', saved.';
+  }
+  if (!ig.found) return 'Social search: ' + (ig.reason || r.reason || 'not found') + '.';
+  return '@' + (ig.username || ig.handle) + ': ' + Number(ig.followers || 0).toLocaleString() + ' followers - check details below.';
+}
+
+function LookupButton({ label, run, onDone, describe }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      className="btn sm"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        try { toast.info(describe(await run())); await onDone(); }
+        catch (e) { toast.error(e); }
+        finally { setBusy(false); }
+      }}
+    >
+      {busy ? 'Looking up...' : label}
+    </button>
+  );
+}
+
+/** Why this is not a prospect - and the way back if the rule got it wrong. */
+function ExclusionBanner({ lead, onDone }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  return (
+    <div style={{ padding: '10px 18px 0' }}>
+      <div className="callout bad">
+        <strong>{lead.exclusionLabel}.</strong> {lead.exclusion_reason}
+        <div className="row" style={{ marginTop: 8 }}>
+          <button
+            className="btn sm"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await api.setExclusion(lead.id, { exclusion: 'none' });
+                toast.success('Included. It will not be excluded again.');
+                await onDone();
+              } catch (e) { toast.error(e); } finally { setBusy(false); }
+            }}
+          >
+            Wrong - include it
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const FIELD_LABEL = {
+  phone: 'Phone', website: 'Website', review_count: 'Google reviews', rating: 'Rating', ig_followers: 'Instagram followers',
+  li_followers: 'LinkedIn followers', fb_followers: 'Facebook followers', years_in_business: 'Years trading', locations_count: 'Locations',
+};
+
+/**
+ * Values a lookup found but would not write on its own. One click puts each on
+ * the lead as a person's decision, with its source kept.
+ */
+function Candidates({ lead, onDone }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(null);
+  const entries = Object.entries(lead.candidates || {});
+
+  const resolve = async (field, accept) => {
+    setBusy(field);
+    try {
+      await api.resolveCandidate(lead.id, field, accept);
+      toast.success(accept ? (FIELD_LABEL[field] || field) + ' saved and rescored.' : 'Dismissed.');
+      await onDone();
+    } catch (e) { toast.error(e); } finally { setBusy(null); }
+  };
+
+  return (
+    <div style={{ padding: '10px 18px 0' }}>
+      <div className="callout info">
+        <strong>Found, needs your OK.</strong> Check each against its source before accepting.
+        {entries.map(([field, c]) => (
+          <div key={field} className="row wrap" style={{ marginTop: 8, gap: 8 }}>
+            <span style={{ minWidth: 130 }} className="small muted">{FIELD_LABEL[field] || field}</span>
+            <strong>{String(c.value)}</strong>
+            {c.source && /^https?:/.test(c.source) && <a className="small" href={c.source} target="_blank" rel="noreferrer">source</a>}
+            {c.note && <span className="small faint">{c.note}</span>}
+            <div className="spacer" />
+            <button className="btn sm primary" disabled={busy === field} onClick={() => resolve(field, true)}>Accept</button>
+            <button className="btn sm ghost" disabled={busy === field} onClick={() => resolve(field, false)}>Dismiss</button>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -191,9 +346,12 @@ function VerifyBanner({ lead, onDone }) {
   return (
     <div style={{ padding: '12px 18px', background: 'var(--panel)', borderBottom: '1px solid var(--line)' }}>
       {lead.discovery_status === 'rejected' ? (
-        <div className="callout bad">
-          <strong>Rejected.</strong> {lead.disqualify_reason}
-        </div>
+        // An exclusion already says why, with the way back, just above.
+        lead.exclusionLabel ? null : (
+          <div className="callout bad">
+            <strong>Rejected.</strong> {lead.disqualify_reason}
+          </div>
+        )
       ) : lead.discovery_status === 'discovered' ? (
         <div className="callout bad">
           <strong>Existence not confirmed.</strong> This business was suggested by the model from memory,
@@ -300,6 +458,7 @@ function AiMeta({ res }) {
 /* ---------------- tabs ---------------- */
 
 function BriefTab({ lead, disabled }) {
+  const app = useApp();
   const toast = useToast();
   const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -339,7 +498,10 @@ function BriefTab({ lead, disabled }) {
         <div className="divider" />
         <div className="kv">
           <dt>Recommended</dt>
-          <dd>{lead.packageName || o.recommended_package_id} · <strong>{o.price_band}</strong></dd>
+          <dd>
+            {app.packages.find((p) => p.id === o.recommended_package_id)?.name || o.recommended_package_id}
+            {' · '}<strong>{o.price_band}</strong>
+          </dd>
         </div>
       </div>
 
@@ -522,7 +684,10 @@ function MessageTab({ lead, disabled }) {
   if (!res) return null;
 
   const edited = text !== res.output.message;
-  const link = lead.phone ? 'https://wa.me/' + lead.phone.replace(/\D/g, '') + '?text=' + encodeURIComponent(text) : null;
+  // The server's pick: their mobile, or the WhatsApp number on their own site,
+  // already in international form. The raw phone field is not dialable as-is.
+  const to = res.whatsappTo || lead.phone_normalized;
+  const link = to ? 'https://wa.me/' + to.replace(/\D/g, '') + '?text=' + encodeURIComponent(text) : null;
 
   return (
     <div>
@@ -674,6 +839,176 @@ function ActivityTab({ lead, onChanged }) {
   );
 }
 
+const yesNo = (v) => (v === true ? 'yes' : v === false ? 'no' : 'not checked');
+
+/** Names of the things an audit found switched on, or "none". */
+function present(obj, labels) {
+  return labels.filter(([k]) => obj && obj[k]).map(([, label]) => label).join(', ') || 'none';
+}
+
+/**
+ * Everything the auditor read off their site. Each line is something a rep can
+ * check on their own phone before saying it out loud.
+ */
+function AuditCard({ lead, onChanged }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const a = lead.website_audit || {};
+  const psi = a.psi;
+  const socials = Object.entries(a.socials || {}).filter(([k]) => k !== 'host');
+  const onSite = a.contact
+    ? [...(a.contact.phones || []), a.contact.whatsapp ? 'WhatsApp ' + a.contact.whatsapp : null, ...(a.contact.emails || [])].filter(Boolean)
+    : [];
+
+  return (
+    <div className="card">
+      <h3>Website audit</h3>
+      <div className="kv small">
+        <dt>Status</dt><dd>{lead.website_status}{a.error ? ' - ' + a.error : ''}</dd>
+        {a.finalUrl && (
+          <>
+            <dt>Checked</dt>
+            <dd>
+              <a href={a.finalUrl} target="_blank" rel="noreferrer">{a.finalUrl}</a>
+              {a.checkedAt ? ' · ' + new Date(a.checkedAt).toLocaleDateString() : ''}
+            </dd>
+          </>
+        )}
+        {a.builder && <><dt>Built with</dt><dd>{a.builder}</dd></>}
+        {a.agencyCredit && <><dt>Footer credits</dt><dd>{a.agencyCredit}</dd></>}
+        <dt>HTTPS</dt>
+        <dd>{a.tls && a.tls.valid === false ? 'certificate problem (' + a.tls.error + ')' : yesNo(lead.has_https)}</dd>
+        <dt>Mobile ready</dt><dd>{yesNo(lead.mobile_friendly)}</dd>
+        {psi && (
+          <>
+            <dt>Google PageSpeed</dt>
+            <dd>
+              performance {psi.performance ?? '?'} · SEO {psi.seo ?? '?'}
+              {psi.lcpMs ? ' · loads in ' + (psi.lcpMs / 1000).toFixed(1) + 's on a phone' : ''}
+            </dd>
+          </>
+        )}
+        {!psi && lead.psi_mobile != null && <><dt>Mobile PageSpeed</dt><dd>{lead.psi_mobile}</dd></>}
+        {a.tracking && (
+          <>
+            <dt>Measurement</dt>
+            <dd>
+              {present(a.tracking, [
+                ['ga4', 'Google Analytics 4'], ['gtm', 'Tag Manager'], ['otherAnalytics', 'analytics'],
+                ['universalAnalytics', 'dead Universal Analytics'], ['metaPixel', 'Meta pixel'], ['googleAds', 'Google Ads tag'],
+                ['linkedinInsight', 'LinkedIn tag'], ['clarity', 'Clarity'], ['hotjar', 'Hotjar'],
+              ])}
+            </dd>
+          </>
+        )}
+        {a.conversion && (
+          <>
+            <dt>Ways to enquire</dt>
+            <dd>
+              {present(a.conversion, [
+                ['whatsapp', 'WhatsApp'], ['clickToCall', 'click-to-call'], ['contactForm', 'form'],
+                ['booking', 'booking'], ['liveChat', 'chat'], ['ecommerce', 'online shop'],
+              ])}
+            </dd>
+          </>
+        )}
+        {a.seo && (
+          <>
+            <dt>Search basics</dt>
+            <dd>
+              {[
+                a.seo.noindex ? 'HIDDEN from Google (noindex)' : null,
+                a.metaDescription ? 'meta description' : 'no meta description',
+                a.seo.localSchema ? 'local business schema' : 'no local business schema',
+                a.seo.openGraph ? 'share previews' : 'no share previews',
+              ].filter(Boolean).join(', ')}
+            </dd>
+          </>
+        )}
+        {a.copyrightYear && <><dt>Copyright</dt><dd>{a.copyrightYear}</dd></>}
+        {onSite.length > 0 && <><dt>On their site</dt><dd>{onSite.join(' · ')}</dd></>}
+        {socials.length > 0 && <><dt>Social links</dt><dd>{socials.map(([k, v]) => k + ': ' + v).join(' · ')}</dd></>}
+      </div>
+      {(a.signals || []).length > 0 && (
+        <>
+          <div className="divider" />
+          {a.signals.map((s, i) => <div key={i} className="gap-line">{s}</div>)}
+        </>
+      )}
+      {lead.website && (
+        <button
+          className="btn sm"
+          style={{ marginTop: 10 }}
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try { await api.auditLead(lead.id, true); toast.success('Re-audited.'); await onChanged(); }
+            catch (e) { toast.error(e); } finally { setBusy(false); }
+          }}
+        >
+          {busy ? 'Auditing...' : 'Re-audit with PageSpeed'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** What social media audits say about their account. */
+function SocialCard({ lead }) {
+  const social = lead.social_audit || {};
+  const ig = social.instagram;
+  const fb = social.facebook;
+  const li = social.linkedin;
+  if (!ig && !fb && !li && !lead.ig_handle) return null;
+  return (
+    <div className="card">
+      <h3>Social Media Presence</h3>
+      {ig && ig.found ? (
+        <div className="kv small">
+          <dt>Instagram</dt>
+          <dd>
+            <a href={'https://www.instagram.com/' + (ig.username || ig.handle) + '/'} target="_blank" rel="noreferrer">
+              @{ig.username || ig.handle}
+            </a>
+            {ig.name ? ' · ' + ig.name : ''}
+          </dd>
+          <dt>Followers</dt><dd>{Number(ig.followers || 0).toLocaleString()}</dd>
+          {ig.mediaCount != null && (
+            <><dt>Posts</dt><dd>{ig.mediaCount}{ig.postsLast30d != null ? ' · ' + ig.postsLast30d + ' in last 30d' : ''}</dd></>
+          )}
+          {ig.lastPostAt && (
+            <><dt>Last post</dt><dd>{new Date(ig.lastPostAt).toLocaleDateString()}</dd></>
+          )}
+          {ig.engagementRate != null && <><dt>Engagement</dt><dd>{(ig.engagementRate * 100).toFixed(2)}% of followers per post</dd></>}
+          <dt>Source</dt><dd>{ig.source === 'gemini_search_grounding' ? 'Google Search Grounding' : "Instagram's API"}</dd>
+        </div>
+      ) : (
+        <div className="small muted">
+          {ig ? 'Instagram: ' + (ig.reason || 'not found') + '.' : lead.ig_handle ? '@' + lead.ig_handle + ' - numbers not looked up yet.' : 'No Instagram account recorded.'}
+        </div>
+      )}
+      {fb && fb.found && (
+        <div className="kv small" style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+          <dt>Facebook</dt>
+          <dd>
+            {fb.url ? <a href={fb.url} target="_blank" rel="noreferrer">{fb.name || 'Facebook Page'}</a> : (fb.name || 'Found')}
+          </dd>
+          {fb.followers != null && <><dt>Followers</dt><dd>{Number(fb.followers).toLocaleString()}</dd></>}
+        </div>
+      )}
+      {li && li.found && (
+        <div className="kv small" style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+          <dt>LinkedIn</dt>
+          <dd>
+            {li.url ? <a href={li.url} target="_blank" rel="noreferrer">Company Page</a> : 'Found'}
+          </dd>
+          {li.followers != null && <><dt>Followers</dt><dd>{Number(li.followers).toLocaleString()}</dd></>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DetailsTab({ lead, onChanged }) {
   const toast = useToast();
   const [form, setForm] = useState({
@@ -711,9 +1046,9 @@ function DetailsTab({ lead, onChanged }) {
   return (
     <div>
       <div className="callout info" style={{ marginBottom: 12 }}>
-        Instagram and LinkedIn follower counts have no legal API, and Google's ad library does not cover
-        commercial ads. These are the ten-minute audit a rep does before calling. Anything you type here
-        beats anything fetched, and the score updates the moment you save.
+        Instagram numbers come from Instagram's own API when it is set up. LinkedIn followers and whether
+        they run ads have no API for this, so they are the ten-minute audit a rep does before calling.
+        Anything you type here beats anything fetched, and the score updates the moment you save.
       </div>
 
       <div className="card">
@@ -763,27 +1098,8 @@ function DetailsTab({ lead, onChanged }) {
         <button className="btn primary" onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save and rescore'}</button>
       </div>
 
-      {lead.website_audit && (
-        <div className="card">
-          <h3>Website audit</h3>
-          <div className="kv small">
-            <dt>Status</dt><dd>{lead.website_status}</dd>
-            {lead.website_audit.builder && <><dt>Built with</dt><dd>{lead.website_audit.builder}</dd></>}
-            <dt>HTTPS</dt><dd>{lead.has_https === null ? 'unknown' : lead.has_https ? 'yes' : 'no'}</dd>
-            <dt>Mobile ready</dt><dd>{lead.mobile_friendly === null ? 'unknown' : lead.mobile_friendly ? 'yes' : 'no'}</dd>
-            {lead.psi_mobile != null && <><dt>Mobile PageSpeed</dt><dd>{lead.psi_mobile}</dd></>}
-          </div>
-          {(lead.website_audit.signals || []).length > 0 && (
-            <>
-              <div className="divider" />
-              {lead.website_audit.signals.map((s, i) => <div key={i} className="gap-line">{s}</div>)}
-            </>
-          )}
-          <button className="btn sm" style={{ marginTop: 10 }} onClick={() => api.auditLead(lead.id, true).then(onChanged)}>
-            Re-audit with PageSpeed
-          </button>
-        </div>
-      )}
+      {lead.website_audit && <AuditCard lead={lead} onChanged={onChanged} />}
+      <SocialCard lead={lead} />
 
       {lead.source_url && (
         <div className="card">
