@@ -1,6 +1,6 @@
 import { generateJson, generateGrounded } from './llm.js';
 import { gapsFrom, explainScore } from './scoring.js';
-import { urgentIssue, recommendPackage } from './deal.js';
+import { urgentIssue, recommendPackage, UNCONFIRMED } from './deal.js';
 import { asObject, daysSince } from './util.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 export { buildSystemPrompt };
@@ -55,7 +55,11 @@ export function leadContext(lead, extras = {}) {
 
   // The one thing to open with, when there is something urgent and true.
   const urgent = urgentIssue(lead);
-  if (urgent) lines.push('', 'MOST URGENT, VERIFIED: ' + urgent);
+  if (urgent && urgent.endsWith(UNCONFIRMED)) {
+    lines.push('', 'POSSIBLY URGENT, NOT CONFIRMED - raise it as a question, never as a fact: ' + urgent.slice(0, -UNCONFIRMED.length));
+  } else if (urgent) {
+    lines.push('', 'MOST URGENT, VERIFIED: ' + urgent);
+  }
 
   const signals = explainScore(b);
   if (signals.length) {
@@ -120,10 +124,13 @@ function websiteLine(lead) {
 function instagramLine(lead, ig) {
   if (ig && ig.found) {
     const quiet = daysSince(ig.lastPostAt);
-    return '@' + ig.username + ': ' + Number(ig.followers || 0).toLocaleString('en-IN') + ' followers, ' +
-      (ig.mediaCount ?? '?') + ' posts' +
-      (quiet !== null ? ', last post ' + quiet + ' days ago' : '') +
-      ' (from Instagram itself)';
+    const from = ig.source === 'gemini_search_grounding' ? ' (from a Google search result, not Instagram itself)'
+      : ig.source === 'human' ? ' (checked by a person)' : ' (from Instagram itself)';
+    return '@' + (ig.username || ig.handle) + ': '
+      + (ig.followers != null ? Number(ig.followers).toLocaleString('en-IN') : 'UNKNOWN') + ' followers, '
+      + (ig.mediaCount ?? '?') + ' posts'
+      + (quiet !== null ? ', last post ' + quiet + ' days ago' : '')
+      + from;
   }
   if (lead.ig_followers != null) return Number(lead.ig_followers).toLocaleString('en-IN') + ' followers' + (lead.ig_handle ? ' (@' + lead.ig_handle + ')' : '');
   if (lead.ig_handle) return '@' + lead.ig_handle + ', follower count UNKNOWN';
@@ -219,10 +226,10 @@ export async function researchBusiness({ lead }) {
 const SOCIAL_SHAPE = {
   instagram_handle: 'handle without @, or null',
   instagram_name: 'profile name or null',
-  instagram_followers: 'follower count as integer number, or null',
-  instagram_following: 'following count as integer number, or null',
-  instagram_posts: 'total number of posts as integer number, or null',
-  instagram_last_post_date: 'YYYY-MM-DD date string of latest post, or null',
+  instagram_followers: 'follower count exactly as the result shows it, e.g. "12.4K" or "1,234", or null',
+  instagram_following: 'following count as shown, or null',
+  instagram_posts: 'number of posts as shown, or null',
+  instagram_last_post_date: 'YYYY-MM-DD of the latest post, only if a result shows the date, else null',
   instagram_url: 'https://www.instagram.com/{handle}/ or null',
   facebook_url: 'facebook page URL or null',
   facebook_name: 'facebook page name or null',
@@ -238,38 +245,45 @@ const SOCIAL_SHAPE = {
 };
 
 const SOCIAL_SYSTEM = [
-  'You find the public social media presence of a local business using Google Search.',
+  'You look up the public social media accounts of one local business with Google Search.',
   '',
   'Rules:',
-  '1. Search before answering. Report only what you actually found from Google Search results.',
-  '2. Search for the business name and location across Instagram, Facebook, and LinkedIn.',
-  '3. Follower counts and post counts must come from a real page snippet or profile you read. Never estimate, never round a number you did not read. null is the correct answer when unsure.',
-  '4. If you find their Instagram, extract the handle, follower count, total posts, and the date of their most recent post.',
-  '5. Make sure it is the right business - same name AND same city/locality. A national brand or unrelated entity with a similar name is NOT a match.',
-  '6. Never return a phone number or an email address here.',
-  '7. If you find nothing for a field, return null. An empty honest answer is worth more than a plausible invented one.',
+  '1. Search first, every time. Facts about a small business are not in your memory - an answer you did not search for is a guess, and a guess is worse than null.',
+  '2. It must be this business: the same name AND the same city or locality. A namesake in another city, a national brand, or a franchise head office is NOT a match.',
+  '3. Copy numbers exactly as the search result shows them ("1,234 Followers", "12.4K followers", "56 posts"). Never estimate, never round. If no result you read shows a number, it is null.',
+  '4. A post date must be one you read on a result. Do not infer one from "recent posts" or from today\'s date.',
+  '5. Never return a phone number or an email address.',
+  '6. An empty, honest answer is worth more than a plausible invented one.',
 ].join('\n');
 
 /**
- * Social media presence via Gemini Google Search grounding.
+ * Social presence through Google search grounding.
  *
- * Discovers Instagram handles, followers, post counts, recency, Facebook,
- * LinkedIn, YouTube, and trading longevity without needing third-party tokens.
+ * The model decides for itself whether to search, and measured it often does
+ * not: it answers from memory with a confident handle and an invented "last
+ * post" date. Spelling out the exact searches makes it search more often, and
+ * the caller throws away any answer that came back without one.
  */
 export async function enrichSocial({ lead }) {
-  const where = [lead.locality, lead.region].filter(Boolean).join(', ');
+  const city = lead.locality || lead.region || '';
+  const where = [lead.locality, lead.region, lead.country_code].filter(Boolean).join(', ');
+  const q = '"' + lead.name + '"' + (city ? ' ' + city : '');
   const user = [
-    'Find the social media presence and follower counts for this business using Google Search.',
+    'Look this business up with Google Search now:',
     'Name: ' + lead.name,
     'Type: ' + (lead.category || 'local business'),
     'Location: ' + (where || lead.address || 'unknown'),
-    lead.website ? 'Website: ' + lead.website : '',
-    lead.ig_handle ? 'Known Instagram handle: @' + lead.ig_handle : '',
+    lead.website ? 'Their website: ' + lead.website : '',
+    lead.ig_handle ? 'Instagram handle on file: @' + lead.ig_handle + ' - confirm it and read its numbers' : '',
     '',
-    'Search for: "' + lead.name + '" ' + (where || '') + ' instagram facebook linkedin',
-    'Find their official Instagram (handle, followers, total posts, date of last post).',
-    'Find their Facebook page (URL, follower/like count) and LinkedIn company page (URL, followers).',
-    'Also find how long they have been trading (founded year or years in business) and number of branches/locations if mentioned.',
+    'Run these searches:',
+    '1. ' + q + ' instagram',
+    '2. ' + q + ' facebook',
+    '3. ' + q + ' linkedin',
+    '',
+    'From the Instagram result: the handle, and the followers and posts count only if the result shows them.',
+    'From the Facebook and LinkedIn results: the page URL, and the follower count only if shown.',
+    'If a result says when they were founded or how many branches they have, include it.',
   ].filter(Boolean).join('\n');
 
   return generateGrounded({

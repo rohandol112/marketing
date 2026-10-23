@@ -325,7 +325,9 @@ export function scoreLead(lead, cfg = DEFAULT_SCORING_CONFIG, ctx = {}) {
   const ig = asObject(lead.social_audit).instagram;
   if (ig && ig.found) {
     const quiet = daysSince(ig.lastPostAt, at.getTime());
-    if (Number(ig.mediaCount) === 0) {
+    // Unknown is not zero: Number(null) is 0, and that flagged every account
+    // whose post count nobody had read as "never posted".
+    if (ig.mediaCount !== null && ig.mediaCount !== undefined && ig.mediaCount !== '' && Number(ig.mediaCount) === 0) {
       award(digital, c.digital.dormantInstagram.points, 'Instagram account with no posts', 'They claimed the handle and never used it');
     } else if (quiet !== null && quiet > c.digital.dormantInstagram.days) {
       award(digital, c.digital.dormantInstagram.points, 'No Instagram post in ' + quiet + ' days', 'They have the account and stopped feeding it');

@@ -1,5 +1,8 @@
 import knex, { logUsage } from '../db/knex.js';
-import { uid, now, sha1, normalizeUrl, normalizeHost, cleanInstagramHandle, asObject } from '../lib/util.js';
+import {
+  uid, now, sha1, normalizeUrl, normalizeHost, cleanInstagramHandle, asObject, daysSince, nameSimilarity,
+  handleMatchesName, parseHumanCount, HttpError,
+} from '../lib/util.js';
 import {
   generatePrecallBrief,
   generateWhatsappOpener,
@@ -235,11 +238,11 @@ export async function verifyByResearch({ tenantId, leadId }) {
     }
     const handle = cleanInstagramHandle(dp.instagram);
     if (!lead.ig_handle && handle) patch.ig_handle = handle;
-    if (lead.ig_followers == null && dp.followers_estimate) {
-      const n = Number(String(dp.followers_estimate).replace(/[^0-9.]/g, ''));
-      const mult = /k/i.test(String(dp.followers_estimate)) ? 1000 : /m/i.test(String(dp.followers_estimate)) ? 1000000 : 1;
-      if (Number.isFinite(n) && n > 0) patch.ig_followers = Math.round(n * mult);
-    }
+    // An "estimate" is the model's word for a number it did not read off the
+    // profile, so it is offered, not written. ("500 members" used to parse as
+    // 500 million: any "m" in the text multiplied.)
+    const estimate = lead.ig_followers == null ? parseHumanCount(dp.followers_estimate) : null;
+    if (estimate !== null && estimate > 0) propose('ig_followers', estimate, (r.sources || [])[0]?.uri);
     if (dp.website && !lead.website) propose('website', dp.website, (r.sources || [])[0]?.uri);
     if (Object.keys(cand).length) patch.candidates = JSON.stringify(cand);
     patch.field_provenance = JSON.stringify(prov);
@@ -274,193 +277,251 @@ export async function verifyByResearch({ tenantId, leadId }) {
 
 
 /**
- * Fill the social columns nothing else can reach.
+ * Social presence through Google search: the Instagram handle, the Facebook
+ * and LinkedIn pages, and - now and then - their numbers.
  *
- * Maps grounding gives phone, rating, reviews and address. The website auditor
- * lifts handles off a business's own site. Neither gives a follower count, and
- * there is no lawful API that does - the Instagram Graph API needs the business
- * to grant access, and scraping profiles breaks Meta terms and stops working
- * within weeks. Search is the one route that stays legitimate.
+ * What the search is trusted with was measured, not assumed. Asked about two
+ * real Pune clinics, gemini-3.6-flash at low thinking never searched once, yet
+ * answered with a handle, a "last post two days ago" date, years in business,
+ * and an evidence line naming pages it never opened. Across a dozen real
+ * searches it returned no follower count at all. So:
  *
- * Numbers land as candidates with their evidence, same as a retrieved phone:
- * a person accepts them, and the provenance survives.
+ *   - nothing is written unless the search actually ran (it gets two tries);
+ *   - a handle is written when it reads as the business's name, otherwise it
+ *     waits for a person as a candidate;
+ *   - counts, post dates and tenure need a cited page from that network, and a
+ *     count is only written for an account known to be theirs - otherwise it
+ *     is a candidate;
+ *   - a value a person typed is never overwritten.
  */
-export async function enrichLeadSocial({ tenantId, leadId }) {
+export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
   const lead = await knex('leads').where({ id: leadId, tenant_id: tenantId }).first();
-  if (!lead) throw new Error('Lead not found');
+  if (!lead) throw new HttpError(404, 'Lead not found');
 
-  const r = await enrichSocial({ lead });
+  const prov = asObject(lead.field_provenance);
+  if (!force) {
+    const age = daysSince(prov.social_lookup && prov.social_lookup.at);
+    if (age !== null && age < 14) return { skipped: 'Searched ' + age + ' days ago', filled: 0 };
+  }
 
+  const searchedFor = (x) => (x.queries || []).length > 0 || (x.sources || []).length > 0;
+  let r = await enrichSocial({ lead });
+  let tries = 1;
+  // Whether to search is the model's own call, made fresh each time.
+  if (!r.fallback && !searchedFor(r)) { r = await enrichSocial({ lead }); tries++; }
+
+  if (r.fallback) {
+    // Throttled, timed out, out of quota: says nothing about the business, so
+    // nothing is recorded and it can be tried again.
+    console.warn('[social] search for "' + lead.name + '" failed: ' + r.reason);
+    return { skipped: true, filled: 0, reason: 'Social search failed: ' + r.reason, retryable: Boolean(r.retryable) };
+  }
+  await logUsage({
+    tenantId, provider: 'gemini', operation: 'social_search', units: tries,
+    meta: { model: r.model, queries: (r.queries || []).length, sources: (r.sources || []).length },
+  });
+
+  const at = now();
   const d = r.data || {};
-  const hasGrounding = r.grounded || (r.sources && r.sources.length > 0) || (r.queries && r.queries.length > 0)
-    || (d.instagram_handle && (d.instagram_followers != null || d.instagram_posts != null));
+  const searched = searchedFor(r);
+  const sources = (r.sources || []).filter((s) => s.uri || s.title);
+  const citedFrom = (re) => sources.some((s) => re.test(String(s.title || '') + ' ' + String(s.uri || '')));
+  const igCited = citedFrom(/instagram/i);
+  const fbCited = citedFrom(/facebook/i);
+  const liCited = citedFrom(/linkedin/i);
+  const evidence = sources.find((s) => /^https?:/.test(s.uri || ''))?.uri || null;
 
-  if (r.fallback || !hasGrounding) {
-    return {
-      filled: 0,
-      grounded: false,
-      sources: 0,
-      handle: lead.ig_handle || null,
-      candidates: {},
-      skipped: true,
-      reason: 'Search did not ground for this business, so nothing was written. '
-        + (r.reason || 'Retry later, or fill the followers in by hand.'),
+  const social = asObject(lead.social_audit);
+  const cand = { ...asObject(lead.candidates) };
+  const before = Object.keys(cand).length;
+  const patch = {};
+  const written = [];
+  const typedByPerson = (field) => prov[field] && prov[field].source === 'human';
+  const propose = (field, value, note) => {
+    if (value === null || value === undefined) return;
+    if (lead[field] !== null && lead[field] !== undefined && String(lead[field]) === String(value)) return;
+    cand[field] = { value, source: evidence, found_at: at, via: 'social_search', note };
+  };
+  const write = (field, value, method) => {
+    if (value === null || value === undefined) return;
+    if (lead[field] !== null && lead[field] !== undefined) {
+      if (String(lead[field]) === String(value)) return;
+      // A number an earlier search wrote is refreshed; one a person typed,
+      // Instagram's API returned, or nobody recorded the source of is not.
+      const src = prov[field] && prov[field].source;
+      if (src !== 'gemini_search_grounding') {
+        propose(field, value, 'Search found a different value from the one on file');
+        return;
+      }
+    }
+    patch[field] = value;
+    prov[field] = { source: 'gemini_search_grounding', method, by: evidence, confidence: 'medium', verified_at: at };
+    written.push(field);
+  };
+
+  /* ---------- Instagram ---------- */
+  const existingHandle = cleanInstagramHandle(lead.ig_handle);
+  const foundHandle = cleanInstagramHandle(d.instagram_handle || d.instagram_url);
+  const namesMatch = Boolean(foundHandle && (handleMatchesName(foundHandle, lead.name)
+    || (d.instagram_name && nameSimilarity(d.instagram_name, lead.name) >= 0.8)));
+  let handle = existingHandle;
+  let handleWritten = false;
+  if (foundHandle && !existingHandle) {
+    if (searched && namesMatch && !typedByPerson('ig_handle')) {
+      patch.ig_handle = foundHandle;
+      prov.ig_handle = { source: 'gemini_search_grounding', method: 'social_search', by: evidence, confidence: 'medium', verified_at: at };
+      written.push('ig_handle');
+      handle = foundHandle;
+      handleWritten = true;
+    } else {
+      propose('ig_handle', foundHandle, searched
+        ? 'Found by search, but the handle does not read as this business - open it and check'
+        : 'Suggested without a search - open the profile and check before accepting');
+    }
+  }
+
+  // Numbers are only trusted for an account known to be theirs: a handle off
+  // their own website, one a person entered, or one Instagram's API confirmed -
+  // and the search must have read that same account on Instagram itself. A
+  // handle that merely reads like their name could be the namesake in the next
+  // city, so its numbers wait for a person.
+  const igSource = prov.ig_handle && prov.ig_handle.source;
+  const sameAccount = Boolean(handle && foundHandle === handle);
+  const ours = sameAccount && !handleWritten && ['website_audit', 'human', 'instagram_graph_api'].includes(igSource);
+  const igNumbersTrusted = searched && igCited && ours;
+
+  const followers = parseHumanCount(d.instagram_followers);
+  const posts = parseHumanCount(d.instagram_posts);
+  let lastPostAt = null;
+  if (d.instagram_last_post_date) {
+    const t = Date.parse(d.instagram_last_post_date);
+    // Instagram opened in October 2010; a date after today is not a post.
+    if (Number.isFinite(t) && t >= Date.parse('2010-10-06') && t <= Date.now() + 86400000) lastPostAt = new Date(t).toISOString();
+  }
+
+  if (igNumbersTrusted && followers !== null) {
+    write('ig_followers', followers, 'social_search');
+  } else if (searched && followers !== null && foundHandle) {
+    propose('ig_followers', followers, igCited
+      ? 'Read off @' + foundHandle + ' on Instagram - check it is their account'
+      : 'Search gave @' + foundHandle + ' this many followers without citing Instagram - check before accepting');
+  }
+
+  // The Instagram block drives the "dormant" and "no posts" signals, so it is
+  // only built from what was cited - and never over Meta's or a person's own.
+  const prevIg = social.instagram || {};
+  const prevIsSearch = !prevIg.found || prevIg.source === 'gemini_search_grounding';
+  let igAudit = null;
+  if (handle && prevIsSearch && searched && (handleWritten || sameAccount)) {
+    igAudit = {
+      found: true,
+      handle,
+      username: handle,
+      name: d.instagram_name || prevIg.name || null,
+      followers: igNumbersTrusted && followers !== null ? followers : prevIg.followers ?? null,
+      mediaCount: igNumbersTrusted && posts !== null ? posts : prevIg.mediaCount ?? null,
+      // An account with no posts has no last post, whatever an older check said.
+      lastPostAt: igNumbersTrusted && posts === 0 ? null
+        : igNumbersTrusted && lastPostAt ? lastPostAt : prevIg.lastPostAt ?? null,
+      checkedAt: at,
+      source: 'gemini_search_grounding',
+      cited: igCited,
+      evidence,
     };
   }
 
-  const patch = { updated_at: now() };
-  const cand = { ...(lead.candidates || {}) };
-  const prov = { ...(lead.field_provenance || {}) };
-  const social = asObject(lead.social_audit);
-  let filled = 0;
-
-  const toNum = (v) => {
-    if (v === null || v === undefined || v === '') return null;
-    const raw = String(v).trim();
-    const n = Number(raw.replace(/[^0-9.]/g, ''));
-    if (!Number.isFinite(n) || n <= 0) return null;
-    const mult = /m |million/i.test(raw) ? 1e6 : /k |thousand/i.test(raw) ? 1e3 : 1;
-    return Math.round(n * mult);
-  };
-
-  const typedByPerson = (field) => prov[field] && prov[field].source === 'human';
-
-  const handle = cleanInstagramHandle(d.instagram_handle);
-  const igFollowers = toNum(d.instagram_followers);
-  const igPosts = toNum(d.instagram_posts);
-  const fbFollowers = toNum(d.facebook_followers);
-  const liFollowers = toNum(d.linkedin_followers);
-  const evidence = d.evidence || (r.sources && r.sources[0]?.uri) || 'Google Search Grounding';
-
-  let lastPostAt = null;
-  if (d.instagram_last_post_date) {
-    const pd = new Date(d.instagram_last_post_date);
-    if (!Number.isNaN(pd.getTime())) lastPostAt = pd.toISOString();
+  /* ---------- Facebook and LinkedIn ---------- */
+  const fbUrl = normalizeUrl(d.facebook_url);
+  const fbFollowers = parseHumanCount(d.facebook_followers);
+  const fbOurs = Boolean(fbUrl && /facebook\.com/i.test(fbUrl) && d.facebook_name && nameSimilarity(d.facebook_name, lead.name) >= 0.8);
+  let fbAudit = null;
+  if (searched && fbUrl && /facebook\.com/i.test(fbUrl)) {
+    fbAudit = { found: true, url: fbUrl, name: d.facebook_name || null, followers: fbCited && fbOurs ? fbFollowers : null, checkedAt: at, source: 'gemini_search_grounding', cited: fbCited };
+    if (fbCited && fbFollowers !== null) {
+      if (fbOurs) write('fb_followers', fbFollowers, 'social_search');
+      else propose('fb_followers', fbFollowers, 'Facebook page "' + (d.facebook_name || fbUrl) + '" - check it is theirs');
+    }
   }
 
-  // 1. Structured social_audit (Instagram, Facebook, LinkedIn)
-  const prevIg = social.instagram || {};
-  const igFound = Boolean(handle || igFollowers !== null || igPosts !== null || prevIg.found);
-  const igAudit = igFound ? {
-    found: true,
-    handle: handle || cleanInstagramHandle(lead.ig_handle) || prevIg.handle || null,
-    username: handle || cleanInstagramHandle(lead.ig_handle) || prevIg.username || null,
-    name: d.instagram_name || prevIg.name || null,
-    followers: igFollowers !== null ? igFollowers : (prevIg.followers ?? null),
-    mediaCount: igPosts !== null ? igPosts : (prevIg.mediaCount ?? null),
-    lastPostAt: lastPostAt || prevIg.lastPostAt || null,
-    checkedAt: now(),
-    source: 'gemini_search_grounding',
-    evidence,
-  } : null;
+  const liUrl = normalizeUrl(d.linkedin_url);
+  const liFollowers = parseHumanCount(d.linkedin_followers);
+  const liSlug = liUrl ? (liUrl.match(/linkedin\.com\/company\/([^/?#]+)/i) || [])[1] : null;
+  const liOurs = Boolean(liSlug && handleMatchesName(liSlug, lead.name));
+  let liAudit = null;
+  if (searched && liUrl && /linkedin\.com/i.test(liUrl)) {
+    liAudit = { found: true, url: liUrl, followers: liCited && liOurs ? liFollowers : null, checkedAt: at, source: 'gemini_search_grounding', cited: liCited };
+    if (liCited && liFollowers !== null) {
+      if (liOurs) write('li_followers', liFollowers, 'social_search');
+      else propose('li_followers', liFollowers, 'LinkedIn page ' + liUrl + ' - check it is theirs');
+    }
+  }
 
-  const prevFb = social.facebook || {};
-  const fbFound = Boolean(d.facebook_url || fbFollowers !== null || prevFb.found);
-  const fbAudit = fbFound ? {
-    found: true,
-    url: d.facebook_url || prevFb.url || null,
-    name: d.facebook_name || prevFb.name || null,
-    followers: fbFollowers !== null ? fbFollowers : (prevFb.followers ?? null),
-    checkedAt: now(),
-    source: 'gemini_search_grounding',
-    evidence,
-  } : null;
+  /* ---------- Tenure and branches ---------- */
+  if (searched) {
+    const year = new Date().getFullYear();
+    const yrs = parseHumanCount(d.years_in_business);
+    const founded = parseHumanCount(d.founded_year);
+    const tenure = yrs !== null && yrs > 0 && yrs < 200 ? yrs
+      : founded !== null && founded > 1850 && founded <= year ? year - founded : null;
+    const locs = parseHumanCount(d.locations_count);
+    const branches = locs !== null && locs > 0 && locs < 10000 ? locs : null;
+    const cited = sources.length > 0;
+    if (lead.years_in_business == null && tenure !== null) {
+      if (cited) write('years_in_business', tenure, 'social_search');
+      else propose('years_in_business', tenure, 'From search without a cited page - check before accepting');
+    }
+    if (lead.locations_count == null && branches !== null) {
+      if (cited) write('locations_count', branches, 'social_search');
+      else propose('locations_count', branches, 'From search without a cited page - check before accepting');
+    }
+  }
 
-  const prevLi = social.linkedin || {};
-  const liFound = Boolean(d.linkedin_url || liFollowers !== null || prevLi.found);
-  const liAudit = liFound ? {
-    found: true,
-    url: d.linkedin_url || prevLi.url || null,
-    followers: liFollowers !== null ? liFollowers : (prevLi.followers ?? null),
-    checkedAt: now(),
-    source: 'gemini_search_grounding',
-    evidence,
-  } : null;
+  // Every completed search is recorded, found or not, so the same lead is not
+  // searched again for a fortnight.
+  prov.social_lookup = {
+    at, searched, tries, sources: sources.length, cited: { instagram: igCited, facebook: fbCited, linkedin: liCited },
+    handle: foundHandle, model: r.model,
+  };
 
-  const updatedSocial = {
+  const nextSocial = {
     ...social,
     ...(igAudit ? { instagram: igAudit } : {}),
     ...(fbAudit ? { facebook: fbAudit } : {}),
     ...(liAudit ? { linkedin: liAudit } : {}),
-    checkedAt: now(),
-    grounded: true,
-    source: 'gemini_search_grounding',
   };
-  patch.social_audit = JSON.stringify(updatedSocial);
-
-  // 2. Direct lead fields + provenance
-  if (!lead.ig_handle && handle) {
-    patch.ig_handle = handle;
-    prov.ig_handle = { source: 'gemini_search_grounding', method: 'social_search', verified_at: now() };
-    filled++;
-  }
-
-  const writeOrCandidate = (field, value) => {
-    if (value === null || value === undefined) return;
-    if (typedByPerson(field)) {
-      if (Number(lead[field]) !== value) {
-        cand[field] = { value, source: evidence, found_at: now(), via: 'social_enrichment' };
-      }
-      return;
-    }
-    if (lead[field] === null || lead[field] === undefined) {
-      patch[field] = value;
-      prov[field] = { source: 'gemini_search_grounding', method: 'social_search', verified_at: now() };
-      filled++;
-    } else if (Number(lead[field]) !== value) {
-      cand[field] = { value, source: evidence, found_at: now(), via: 'social_enrichment' };
-    }
-  };
-
-  writeOrCandidate('ig_followers', igFollowers);
-  writeOrCandidate('fb_followers', fbFollowers);
-  writeOrCandidate('li_followers', liFollowers);
-
-  if (lead.years_in_business == null) {
-    const yrs = toNum(d.years_in_business);
-    const founded = toNum(d.founded_year);
-    const derived = yrs || (founded && founded > 1850 && founded <= new Date().getFullYear()
-      ? new Date().getFullYear() - founded : null);
-    if (derived !== null) {
-      if (typedByPerson('years_in_business')) {
-        cand.years_in_business = { value: derived, source: evidence, found_at: now(), via: 'social_enrichment' };
-      } else {
-        patch.years_in_business = derived;
-        prov.years_in_business = { source: 'gemini_search_grounding', method: 'social_search', verified_at: now() };
-        filled++;
-      }
-    }
-  }
-
-  if (lead.locations_count == null && d.locations_count != null) {
-    const locs = toNum(d.locations_count);
-    if (locs !== null) {
-      if (typedByPerson('locations_count')) {
-        cand.locations_count = { value: locs, source: evidence, found_at: now(), via: 'social_enrichment' };
-      } else {
-        patch.locations_count = locs;
-        prov.locations_count = { source: 'gemini_search_grounding', method: 'social_search', verified_at: now() };
-        filled++;
-      }
-    }
-  }
-
-  if (Object.keys(cand).length) patch.candidates = JSON.stringify(cand);
+  if (igAudit || fbAudit || liAudit) patch.social_audit = JSON.stringify(nextSocial);
+  patch.candidates = JSON.stringify(cand);
   patch.field_provenance = JSON.stringify(prov);
+  patch.updated_at = at;
   await knex('leads').where({ id: leadId }).update(patch);
 
   const { rescoreLead } = await import('./discovery.js');
   const evaluation = await rescoreLead(leadId);
 
+  const proposed = Object.keys(cand).length - before;
+  console.log(
+    '[social] search for "' + lead.name + '": '
+    + (searched ? 'searched (' + sources.length + ' cited page' + (sources.length === 1 ? '' : 's') + ')' : 'no search after ' + tries + ' tries')
+    + (handle ? ', @' + handle : '')
+    + (written.length ? ', wrote ' + written.join(', ') : ', nothing written')
+    + (proposed > 0 ? ', ' + proposed + ' left for a person' : '')
+    + ' (' + ((r.latencyMs || 0) / 1000).toFixed(1) + 's)'
+  );
+
   return {
-    filled,
-    grounded: true,
-    sources: (r.sources || []).length,
-    handle: patch.ig_handle || lead.ig_handle || null,
-    social_audit: updatedSocial,
-    candidates: cand,
+    filled: written.length,
+    written,
+    searched,
+    sources: sources.length,
+    handle: handle || null,
+    handleWritten,
+    social_audit: nextSocial,
+    candidates: Object.keys(cand),
     evaluation,
-    reason: r.reason,
+    reason: searched
+      ? (written.length || proposed > 0 ? null : 'Searched, but found nothing new for this business.')
+      : 'Google search did not run for this business, so nothing was written'
+        + (proposed > 0 ? ' - a suggested handle is below for you to check.' : '. Try again later, or paste the Instagram line from Google in Details.'),
   };
 }
 

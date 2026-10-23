@@ -1,6 +1,7 @@
 import knex, { logUsage } from '../db/knex.js';
 import { lookupBusiness, mapsLookupAvailable } from '../lib/mapsDiscovery.js';
 import { lookupInstagram, instagramAvailable } from '../lib/instagram.js';
+import { geminiSearchAvailable, geminiKeyStatus } from '../lib/llm.js';
 import { refineCategory } from '../lib/classify.js';
 import { CATEGORY_BY_ID } from '../lib/categories.js';
 import {
@@ -38,7 +39,10 @@ export async function enrichFromMaps({ leadId, refresh = false, force = false })
   const lead = await knex('leads').where({ id: leadId }).first();
   if (!lead) return { skipped: 'Lead no longer exists' };
   if (!mapsLookupAvailable()) {
-    const err = new HttpError(409, 'Google Maps lookup needs LLM_PROVIDER=gemini and a GEMINI_API_KEY with Maps grounding enabled.');
+    const key = geminiKeyStatus();
+    const err = new HttpError(409, key.ok === false
+      ? 'Google refused GEMINI_API_KEY (' + key.reason + '). Replace it and restart to use Maps lookups.'
+      : 'Google Maps lookup needs LLM_PROVIDER=gemini and a GEMINI_API_KEY with Maps grounding enabled.');
     err.retryable = false;
     throw err;
   }
@@ -159,6 +163,13 @@ export async function enrichFromMaps({ leadId, refresh = false, force = false })
   const evaluation = await rescoreLead(leadId);
   if (patch.website) await enqueue({ tenantId: lead.tenant_id, kind: 'audit_lead', payload: { leadId } });
 
+  console.log(
+    '[maps] lookup "' + lead.name + '": ' + r.match + (r.match === 'none' ? '' : ' match')
+    + (written.length ? ', wrote ' + written.join(', ') : '')
+    + (Object.keys(cand).length > Object.keys(asObject(lead.candidates)).length ? ', left candidates for a person' : '')
+    + (r.ms != null ? ' (' + (r.ms / 1000).toFixed(1) + 's)' : '')
+  );
+
   return {
     match: r.match,
     similarity: r.similarity,
@@ -173,33 +184,56 @@ export async function enrichFromMaps({ leadId, refresh = false, force = false })
 /* Instagram                                                          */
 /* ------------------------------------------------------------------ */
 
-export async function enrichInstagram({ leadId, force = false }) {
+/**
+ * Social presence for one lead, by the best route there is.
+ *
+ *   Meta's API     exact followers, posts and last-post date - needs a handle
+ *                  and META_GRAPH_TOKEN.
+ *   Google search  finds the handle and the Facebook and LinkedIn pages. It
+ *                  almost never sees follower counts (measured: none in a dozen
+ *                  real searches), so counts usually still come from Meta or
+ *                  from a rep pasting the Instagram line off Google.
+ *
+ * A handle the search finds is handed straight to Meta when that is set up.
+ */
+export async function enrichSocialPresence({ leadId, force = false }) {
   const lead = await knex('leads').where({ id: leadId }).first();
   if (!lead) return { skipped: 'Lead no longer exists' };
 
   const handle = cleanInstagramHandle(lead.ig_handle);
-
-  // If Meta Graph API is not configured or we have no handle, use Gemini Google Search grounding
-  if (!instagramAvailable() || !handle) {
-    if (mapsLookupAvailable()) {
-      const { enrichLeadSocial } = await import('./ai.js');
-      const res = await enrichLeadSocial({ tenantId: lead.tenant_id, leadId: lead.id });
-      const updated = await knex('leads').where({ id: leadId }).first();
-      const social = asObject(updated.social_audit);
-      return {
-        instagram: social.instagram || { found: false, reason: res.reason || 'Search grounding completed' },
-        written: res.filled > 0,
-        social_audit: social,
-        evaluation: res.evaluation,
-      };
-    }
-    if (!instagramAvailable()) {
-      const err = new HttpError(409, 'Instagram lookup is not configured. Set META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID or configure GEMINI_API_KEY for Google Search grounding.');
-      err.retryable = false;
-      throw err;
-    }
-    if (!handle) return { skipped: 'No Instagram handle on this lead yet' };
+  if (instagramAvailable() && handle) {
+    return { via: 'instagram_api', ...(await enrichInstagram({ leadId, force })) };
   }
+  if (geminiSearchAvailable()) {
+    const { enrichLeadSocial } = await import('./ai.js');
+    const found = await enrichLeadSocial({ tenantId: lead.tenant_id, leadId, force });
+    if (instagramAvailable() && !handle && found.handleWritten) {
+      const exact = await enrichInstagram({ leadId, force: true });
+      return { via: 'google_search+instagram_api', ...found, instagram: exact.instagram, evaluation: exact.evaluation || found.evaluation };
+    }
+    return { via: 'google_search', ...found };
+  }
+  if (instagramAvailable()) return { via: 'instagram_api', skipped: 'No Instagram handle on this lead yet - add one, or set GEMINI_API_KEY so search can find it.' };
+
+  const key = geminiKeyStatus();
+  const err = new HttpError(409, key.ok === false
+    ? 'Google refused GEMINI_API_KEY (' + key.reason + '), so social search is off. Replace the key and restart - or paste the Instagram line from Google in Details.'
+    : 'Social lookup is off. Set GEMINI_API_KEY for Google search, or META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID for Instagram\'s own numbers.');
+  err.retryable = false;
+  throw err;
+}
+
+/** Instagram's own numbers, through Meta's Business Discovery API. */
+export async function enrichInstagram({ leadId, force = false }) {
+  const lead = await knex('leads').where({ id: leadId }).first();
+  if (!lead) return { skipped: 'Lead no longer exists' };
+  if (!instagramAvailable()) {
+    const err = new HttpError(409, 'Instagram lookup is not configured. Set META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID.');
+    err.retryable = false;
+    throw err;
+  }
+  const handle = cleanInstagramHandle(lead.ig_handle);
+  if (!handle) return { skipped: 'No Instagram handle on this lead yet' };
 
   const social = asObject(lead.social_audit);
   const age = daysSince(social.instagram && social.instagram.checkedAt);
@@ -242,8 +276,25 @@ export async function enrichInstagram({ leadId, force = false }) {
     updated_at: now(),
   });
   const evaluation = await rescoreLead(leadId);
+  console.log(
+    '[social] Instagram API @' + handle + ' for "' + lead.name + '": '
+    + (r.found ? Number(r.followers || 0).toLocaleString('en-IN') + ' followers, ' + (r.mediaCount ?? '?') + ' posts'
+      + (patch.ig_followers !== undefined ? ', saved' : ', left for a person to confirm') : 'not found - ' + (r.reason || 'no business account'))
+  );
   return { instagram: r, written: patch.ig_followers !== undefined, evaluation };
 }
 
 registerHandler('enrich_maps', enrichFromMaps);
 registerHandler('enrich_instagram', enrichInstagram);
+
+// One lead per job, so progress shows and one failure cannot sink a batch. A
+// search that failed for a passing reason - throttled, timed out - goes back
+// on the queue instead of being recorded as "nothing found".
+registerHandler('enrich_social', async ({ leadId }) => {
+  const r = await enrichSocialPresence({ leadId });
+  if (r && r.retryable) {
+    const err = new Error(r.reason || 'Social search failed');
+    err.retryable = true;
+    throw err;
+  }
+});

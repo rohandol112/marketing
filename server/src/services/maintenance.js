@@ -2,10 +2,11 @@ import knex from '../db/knex.js';
 import config from '../config.js';
 import {
   uid, now, addDays, asObject, tidyText, normalizeUrl, normalizeHost, normalizeLocality, normalizeName, cleanEmail,
-  cleanInstagramHandle, nameSimilarity, haversineMeters, phoneInfo, phoneFields, countryFor,
+  cleanInstagramHandle, nameSimilarity, haversineMeters, phoneInfo, phoneFields, countryFor, addressKey,
 } from '../lib/util.js';
 import { detectExclusion, refineCategory, platformOf } from '../lib/classify.js';
 import { auditWebsite } from '../lib/websiteAudit.js';
+import { isOfflinePoint } from '../lib/geo.js';
 import { CATEGORY_BY_ID } from '../lib/categories.js';
 import { buildDedupeKey, getScoringConfig, suppressionKeys, tenantCountry, refreshStaleLeads } from './discovery.js';
 import { evaluationPatch } from './lifecycle.js';
@@ -42,7 +43,7 @@ const BATCH = 500;
 const LIGHT_COLUMNS = [
   'id', 'tenant_id', 'name', 'category', 'normalized_category', 'phone', 'phone_normalized', 'phone_type', 'email',
   'website', 'website_host', 'website_status', 'ig_handle', 'ig_followers', 'li_followers', 'fb_followers',
-  'years_in_business', 'locations_count', 'locality', 'postal_code', 'country_code', 'address', 'lat', 'lng',
+  'years_in_business', 'locations_count', 'locality', 'postal_code', 'country_code', 'address', 'lat', 'lng', 'distance_m',
   'rating', 'review_count', 'business_status', 'google_place_id', 'external_id', 'external_source', 'dedupe_key',
   'exclusion', 'exclusion_reason', 'status', 'stage', 'discovery_status', 'disqualified', 'assigned_to',
   'activity_count', 'last_activity_at', 'verified_at', 'verified_by', 'confidence', 'created_at', 'updated_at',
@@ -152,6 +153,20 @@ async function normalise(plan, country) {
       }
     } else if (l.website_host) {
       mark('website_host', null);
+    }
+
+    // A point off the area picker's offline list is not where a business is.
+    // Geocoding used to fall back to it for any address OpenStreetMap could not
+    // read, so whole sweeps of Kothrud clinics sat on "Aundh" - and were then
+    // excluded as out of the area. A directory's own coordinates are left be.
+    if (l.lat != null && l.external_source !== 'openstreetmap' && isOfflinePoint(l.lat, l.lng)) {
+      mark('lat', null);
+      mark('lng', null);
+      mark('distance_m', null);
+      if (l.exclusion === 'out_of_area' && /^About [\d.]+ km from the centre of the /.test(l.exclusion_reason || '')) {
+        mark('exclusion', null);
+        mark('exclusion_reason', null);
+      }
     }
 
     if (l.locality && !typed('locality')) mark('locality', normalizeLocality(l.locality));
@@ -342,6 +357,13 @@ function findClusters(leads) {
   }
   for (const g of byName.values()) {
     if (g.length < 2 || g.length > 50) continue;
+    // The same name at the same street address is one shop, however its
+    // locality was written: Maps answers have given one jeweller as both
+    // "Chaitanya Nagar, Kothrud" and "Kothrud", each with its own place id.
+    pairwise(g, (a, b) => {
+      const ka = addressKey(a.address);
+      return Boolean(ka && ka === addressKey(b.address));
+    }, 'same name at the same address');
     pairwise(g, (a, b) => {
       if (a.lat != null && b.lat != null) return false;   // the grid pass decides these
       const la = (normalizeLocality(a.locality) || '').toLowerCase();

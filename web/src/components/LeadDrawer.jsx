@@ -147,12 +147,13 @@ export default function LeadDrawer({ leadId, onClose, onChanged }) {
             {lead.maps_url && <a className="btn sm ghost" href={lead.maps_url} target="_blank" rel="noreferrer">Maps</a>}
             {lead.website && <a className="btn sm ghost" href={lead.website} target="_blank" rel="noreferrer">Site</a>}
             <div className="spacer" />
-            {(app.modes.instagramLookup || app.modes.mapsLookup) && (
+            {app.modes.mapsLookup && <LookupButton label="Google Maps lookup" run={() => api.enrichMaps(lead.id)} onDone={refresh} describe={describeMaps} />}
+            {app.modes.socialLookup && (
               <LookupButton
-                label={app.modes.instagramLookup && lead.ig_handle ? "Instagram stats" : "Find social presence"}
-                run={() => api.enrichInstagram(lead.id)}
+                label={app.modes.instagramLookup && lead.ig_handle ? 'Instagram stats' : 'Find social presence'}
+                run={() => api.enrichSocial(lead.id)}
                 onDone={refresh}
-                describe={describeInstagram}
+                describe={describeSocial}
               />
             )}
           </div>
@@ -206,16 +207,22 @@ function describeMaps(r) {
   return 'Not found on Google Maps under this name.';
 }
 
-function describeInstagram(r) {
-  if (r.skipped) return r.skipped;
-  const ig = r.instagram || (r.social_audit && r.social_audit.instagram) || {};
-  if (r.written || r.filled) {
-    const handle = ig.username || ig.handle || r.handle;
-    const followers = ig.followers != null ? Number(ig.followers).toLocaleString() + ' followers' : 'social presence';
-    return (handle ? '@' + handle + ': ' : '') + followers + ', saved.';
+/** One sentence for either route: Instagram's own API, or a Google search. */
+function describeSocial(r) {
+  if (typeof r.skipped === 'string') return r.skipped;
+  if (r.via === 'instagram_api') {
+    const ig = r.instagram || {};
+    if (!ig.found) return 'Instagram: ' + (ig.reason || 'not a public business account') + '.';
+    return '@' + ig.username + ': ' + Number(ig.followers || 0).toLocaleString() + ' followers'
+      + (r.written ? ', saved.' : ' - check it is theirs below.');
   }
-  if (!ig.found) return 'Social search: ' + (ig.reason || r.reason || 'not found') + '.';
-  return '@' + (ig.username || ig.handle) + ': ' + Number(ig.followers || 0).toLocaleString() + ' followers - check details below.';
+  if (r.skipped) return r.reason || 'Social search did not run.';
+  const parts = [];
+  if (r.handle) parts.push('@' + r.handle);
+  if (r.written && r.written.length) parts.push('saved ' + r.written.join(', ').replace(/_/g, ' '));
+  if (r.candidates && r.candidates.length) parts.push('check the found values below');
+  if (r.instagram && r.instagram.found) parts.push(Number(r.instagram.followers || 0).toLocaleString() + ' followers from Instagram');
+  return parts.length ? parts.join(' - ') + '.' : (r.reason || 'Nothing new found.');
 }
 
 function LookupButton({ label, run, onDone, describe }) {
@@ -267,7 +274,7 @@ function ExclusionBanner({ lead, onDone }) {
 }
 
 const FIELD_LABEL = {
-  phone: 'Phone', website: 'Website', review_count: 'Google reviews', rating: 'Rating', ig_followers: 'Instagram followers',
+  phone: 'Phone', website: 'Website', review_count: 'Google reviews', rating: 'Rating', ig_handle: 'Instagram', ig_followers: 'Instagram followers',
   li_followers: 'LinkedIn followers', fb_followers: 'Facebook followers', years_in_business: 'Years trading', locations_count: 'Locations',
 };
 
@@ -296,7 +303,11 @@ function Candidates({ lead, onDone }) {
         {entries.map(([field, c]) => (
           <div key={field} className="row wrap" style={{ marginTop: 8, gap: 8 }}>
             <span style={{ minWidth: 130 }} className="small muted">{FIELD_LABEL[field] || field}</span>
-            <strong>{String(c.value)}</strong>
+            <strong>
+              {field === 'ig_handle'
+                ? <a href={'https://www.instagram.com/' + encodeURIComponent(c.value) + '/'} target="_blank" rel="noreferrer">@{c.value}</a>
+                : String(c.value)}
+            </strong>
             {c.source && /^https?:/.test(c.source) && <a className="small" href={c.source} target="_blank" rel="noreferrer">source</a>}
             {c.note && <span className="small faint">{c.note}</span>}
             <div className="spacer" />
@@ -953,58 +964,110 @@ function AuditCard({ lead, onChanged }) {
   );
 }
 
-/** What social media audits say about their account. */
-function SocialCard({ lead }) {
+/** Where each social number came from - a search result is not Instagram's own word. */
+const SOCIAL_SOURCE = {
+  gemini_search_grounding: 'a Google search result - check before quoting it',
+  human: 'checked by a person',
+};
+
+/** What is known about their social accounts, and the quick way to fill the rest in. */
+function SocialCard({ lead, onChanged }) {
   const social = lead.social_audit || {};
   const ig = social.instagram;
   const fb = social.facebook;
   const li = social.linkedin;
-  if (!ig && !fb && !li && !lead.ig_handle) return null;
+  const handle = ig && (ig.username || ig.handle);
   return (
     <div className="card">
-      <h3>Social Media Presence</h3>
+      <h3>Social media</h3>
       {ig && ig.found ? (
         <div className="kv small">
           <dt>Instagram</dt>
           <dd>
-            <a href={'https://www.instagram.com/' + (ig.username || ig.handle) + '/'} target="_blank" rel="noreferrer">
-              @{ig.username || ig.handle}
-            </a>
+            <a href={'https://www.instagram.com/' + encodeURIComponent(handle) + '/'} target="_blank" rel="noreferrer">@{handle}</a>
             {ig.name ? ' · ' + ig.name : ''}
           </dd>
-          <dt>Followers</dt><dd>{Number(ig.followers || 0).toLocaleString()}</dd>
+          <dt>Followers</dt><dd>{ig.followers != null ? Number(ig.followers).toLocaleString() : 'not read yet'}</dd>
           {ig.mediaCount != null && (
-            <><dt>Posts</dt><dd>{ig.mediaCount}{ig.postsLast30d != null ? ' · ' + ig.postsLast30d + ' in last 30d' : ''}</dd></>
+            <><dt>Posts</dt><dd>{ig.mediaCount}{ig.postsLast30d != null ? ' · ' + ig.postsLast30d + ' in the last 30 days' : ''}</dd></>
           )}
-          {ig.lastPostAt && (
-            <><dt>Last post</dt><dd>{new Date(ig.lastPostAt).toLocaleDateString()}</dd></>
-          )}
+          {ig.lastPostAt && <><dt>Last post</dt><dd>{new Date(ig.lastPostAt).toLocaleDateString()}</dd></>}
           {ig.engagementRate != null && <><dt>Engagement</dt><dd>{(ig.engagementRate * 100).toFixed(2)}% of followers per post</dd></>}
-          <dt>Source</dt><dd>{ig.source === 'gemini_search_grounding' ? 'Google Search Grounding' : "Instagram's API"}</dd>
+          <dt>Source</dt>
+          <dd>{SOCIAL_SOURCE[ig.source] || "Instagram's own API"}{ig.checkedAt ? ', ' + new Date(ig.checkedAt).toLocaleDateString() : ''}</dd>
         </div>
       ) : (
         <div className="small muted">
-          {ig ? 'Instagram: ' + (ig.reason || 'not found') + '.' : lead.ig_handle ? '@' + lead.ig_handle + ' - numbers not looked up yet.' : 'No Instagram account recorded.'}
+          {ig ? 'Instagram: ' + (ig.reason || 'not found') + '.' : lead.ig_handle ? '@' + lead.ig_handle + ' - numbers not read yet.' : 'No Instagram account on file yet.'}
         </div>
       )}
       {fb && fb.found && (
-        <div className="kv small" style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+        <div className="kv small" style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
           <dt>Facebook</dt>
-          <dd>
-            {fb.url ? <a href={fb.url} target="_blank" rel="noreferrer">{fb.name || 'Facebook Page'}</a> : (fb.name || 'Found')}
-          </dd>
+          <dd>{fb.url ? <a href={fb.url} target="_blank" rel="noreferrer">{fb.name || 'Facebook page'}</a> : (fb.name || 'Found')}</dd>
           {fb.followers != null && <><dt>Followers</dt><dd>{Number(fb.followers).toLocaleString()}</dd></>}
         </div>
       )}
       {li && li.found && (
-        <div className="kv small" style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+        <div className="kv small" style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
           <dt>LinkedIn</dt>
-          <dd>
-            {li.url ? <a href={li.url} target="_blank" rel="noreferrer">Company Page</a> : 'Found'}
-          </dd>
+          <dd>{li.url ? <a href={li.url} target="_blank" rel="noreferrer">Company page</a> : 'Found'}</dd>
           {li.followers != null && <><dt>Followers</dt><dd>{Number(li.followers).toLocaleString()}</dd></>}
         </div>
       )}
+      <InstagramPaste lead={lead} onChanged={onChanged} />
+    </div>
+  );
+}
+
+/**
+ * The manual route to Instagram numbers, and the dependable one without Meta's
+ * API: Google shows "1,234 Followers, 56 Following, 78 Posts" under every
+ * profile with no login. Copy that line, paste it here, done.
+ */
+function InstagramPaste({ lead, onChanged }) {
+  const toast = useToast();
+  const [text, setText] = useState('');
+  const [lastPost, setLastPost] = useState('');
+  const [busy, setBusy] = useState(false);
+  const links = lead.links || {};
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.recordInstagram(lead.id, { text: text.trim() || undefined, lastPostAt: lastPost || undefined });
+      toast.success('Instagram saved and rescored.');
+      setText('');
+      setLastPost('');
+      onChanged();
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+      <div className="row wrap small" style={{ gap: 6, marginBottom: 8 }}>
+        <span className="muted">Read the numbers yourself:</span>
+        {links.instagram_google && <a className="btn sm" href={links.instagram_google} target="_blank" rel="noreferrer">Find on Google</a>}
+        {links.instagram_profile && <a className="btn sm ghost" href={links.instagram_profile} target="_blank" rel="noreferrer">Open profile</a>}
+      </div>
+      <div className="field">
+        <label>Paste the Instagram line from Google</label>
+        <input
+          type="text"
+          placeholder="1,234 Followers, 56 Following, 78 Posts - See Instagram photos and videos from ... (@handle)"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+      </div>
+      <div className="field-row">
+        <div className="field">
+          <label>Last post date, if you looked</label>
+          <input type="date" value={lastPost} onChange={(e) => setLastPost(e.target.value)} />
+        </div>
+      </div>
+      <button className="btn sm primary" disabled={busy || (!text.trim() && !lastPost)} onClick={save}>
+        {busy ? 'Saving...' : 'Save Instagram'}
+      </button>
     </div>
   );
 }
@@ -1046,9 +1109,10 @@ function DetailsTab({ lead, onChanged }) {
   return (
     <div>
       <div className="callout info" style={{ marginBottom: 12 }}>
-        Instagram numbers come from Instagram's own API when it is set up. LinkedIn followers and whether
-        they run ads have no API for this, so they are the ten-minute audit a rep does before calling.
-        Anything you type here beats anything fetched, and the score updates the moment you save.
+        Instagram numbers come from Instagram's own API when it is set up; otherwise paste the line Google
+        shows under their profile (Social media, below). LinkedIn followers and whether they run ads have
+        no API for this, so they are the ten-minute audit a rep does before calling. Anything you type here
+        beats anything fetched, and the score updates the moment you save.
       </div>
 
       <div className="card">
@@ -1099,7 +1163,7 @@ function DetailsTab({ lead, onChanged }) {
       </div>
 
       {lead.website_audit && <AuditCard lead={lead} onChanged={onChanged} />}
-      <SocialCard lead={lead} />
+      <SocialCard lead={lead} onChanged={onChanged} />
 
       {lead.source_url && (
         <div className="card">

@@ -546,12 +546,20 @@ function System() {
 
             <dt>Gemini</dt>
             <dd>
-              {health.gemini.configured
-                ? <span className="badge a">{health.gemini.modelMain}</span>
-                : <span className="badge b">not configured - templates only</span>}
+              {!health.gemini.configured
+                ? <span className="badge b">not configured - templates only</span>
+                : health.gemini.keyAccepted === false
+                  ? <span className="badge red">key refused by Google</span>
+                  : <span className="badge a">{health.gemini.modelMain}</span>}
+              {health.gemini.keyAccepted === false && (
+                <div className="small" style={{ marginTop: 4, color: 'var(--red)' }}>
+                  {health.gemini.keyProblem}. Maps discovery, Maps lookups, social search and AI drafts are off until
+                  GEMINI_API_KEY is replaced with a working key from aistudio.google.com/apikey and the server restarted.
+                </div>
+              )}
               <div className="small faint" style={{ marginTop: 4 }}>
-                {health.gemini.rpmUsed}/{health.gemini.rpmLimit} this minute ·{' '}
-                {health.gemini.rpdUsed}/{health.gemini.rpdLimit} today
+                {health.gemini.rpmUsed}/{health.gemini.rpmLimit} requests this minute
+                {health.gemini.rpdLimit != null ? ' · ' + health.gemini.rpdUsed + '/' + health.gemini.rpdLimit + ' today' : ''}
               </div>
             </dd>
 
@@ -562,21 +570,27 @@ function System() {
             <dd>
               {health.mapsLookup?.configured ? <span className="badge a">on</span> : <span className="badge">off</span>}
               <div className="small faint" style={{ marginTop: 4 }}>
-                Fills in review counts, ratings, phones and trading status for directory leads. Needs the Gemini
-                provider with a working GEMINI_API_KEY (a Google AI Studio key, starting "AIza").
+                Fills in review counts, ratings, phones and trading status for directory leads, and powers Maps
+                discovery. Needs the Gemini provider with a working GEMINI_API_KEY from Google AI Studio.
+                {health.mapsLookup?.thinkingLevel && (
+                  <> Thinking {health.mapsLookup.thinkingLevel}, {health.mapsLookup.concurrency} calls and{' '}
+                    {health.mapsLookup.categoryConcurrency} categories at a time.</>
+                )}
               </div>
             </dd>
 
             <dt>Instagram & Social</dt>
             <dd>
-              {health.instagram?.configured || health.mapsLookup?.configured ? (
-                <span className="badge a">on{health.instagram?.configured ? ' (Meta API)' : ' (Gemini Search)'}</span>
+              {health.socialLookup?.configured ? (
+                <span className="badge a">on ({health.socialLookup.method === 'meta_graph_api' ? "Instagram's API" : 'Google search'})</span>
               ) : (
                 <span className="badge">off</span>
               )}
               <div className="small faint" style={{ marginTop: 4 }}>
-                Followers, posts and recency via Gemini Google Search Grounding (enabled via GEMINI_API_KEY).
-                Optionally set META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID for direct Meta API lookups.
+                {health.socialLookup?.method === 'meta_graph_api'
+                  ? "Followers, posts and last post from Instagram's own Business Discovery API."
+                  : 'Google search finds the Instagram handle and Facebook/LinkedIn pages, but almost never follower counts. '
+                    + "For exact numbers set META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID, or paste the Instagram line from Google into a lead's Details tab."}
               </div>
             </dd>
 

@@ -1,4 +1,4 @@
-import config from '../config.js';
+import config, { setGeminiKeyRefused } from '../config.js';
 import { sleep } from './util.js';
 
 /**
@@ -76,6 +76,9 @@ function apiKeyFor(provider) {
   return 'local';
 }
 
+/** Set when the default search model has been retired; search then uses the main model. */
+let searchModelGone = false;
+
 export function modelsFor(provider) {
   const main = process.env.LLM_MODEL_MAIN;
   const fast = process.env.LLM_MODEL_FAST;
@@ -87,12 +90,131 @@ export function modelsFor(provider) {
     openrouter: { main: 'meta-llama/llama-3.3-70b-instruct:free', fast: 'meta-llama/llama-3.2-3b-instruct:free' },
   }[provider] || { main: 'llama3.2', fast: 'llama3.2' };
 
-  return { main: main || defaults.main, fast: fast || defaults.fast };
+  const resolvedMain = main || defaults.main;
+  // Search-grounded calls get their own model, because whether a model chooses
+  // to search at all is the whole game and an unsearched answer is discarded.
+  // Measured on real Pune businesses with the same prompt: gemini-2.5-flash
+  // searched on 5 of 5, gemini-3.6-flash on 1 of 4 even with a second try.
+  const search = process.env.LLM_MODEL_SEARCH
+    || (provider === 'gemini' && !searchModelGone ? 'gemini-2.5-flash' : resolvedMain);
+  return { main: resolvedMain, fast: fast || defaults.fast, search };
 }
 
 export function isMock() {
   const provider = activeProvider();
   return PROVIDERS[provider].needsKey && !apiKeyFor(provider);
+}
+
+/* ------------------------------------------------------------------ */
+/* Key health                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Whether Google accepts the configured key, as last observed.
+ *
+ * A refused key used to fail one call at a time and say nothing: a Maps sweep
+ * turned every 401 into a per-category warning and walked all sixty categories
+ * to an empty result, with not one line in the server log. The first refusal -
+ * at boot or on any call - is now remembered and logged, and every Gemini
+ * feature reports itself unavailable with the reason.
+ */
+const keyState = { ok: null, reason: null, checkedAt: null };
+let probing = null;
+let lastProbeAt = 0;
+
+/** Google's own words for a failure, e.g. "401 UNAUTHENTICATED (ACCESS_TOKEN_TYPE_UNSUPPORTED)". */
+export function googleErrorSummary(status, text) {
+  try {
+    const e = JSON.parse(text).error || {};
+    const reason = (e.details || []).map((d) => d && d.reason).find(Boolean);
+    // Trailing full stops dropped: these are quoted inside sentences of our own.
+    return [status, e.status, reason ? '(' + reason + ')' : null].filter(Boolean).join(' ')
+      + (e.message ? ': ' + String(e.message).slice(0, 160).replace(/[.\s]+$/, '') : '');
+  } catch {
+    return status + (text ? ': ' + String(text).slice(0, 160).replace(/[.\s]+$/, '') : '');
+  }
+}
+
+/** A response that says the key itself is no good, as opposed to one request. */
+export function isKeyRefusal(status, text = '') {
+  if (status === 401) return true;
+  if (status === 400) return /API_KEY_INVALID|API key not valid|API key expired/i.test(text);
+  // A bare 403 can be about one model or one tool; these name the key itself.
+  if (status === 403) return /API_KEY_SERVICE_BLOCKED|API_KEY_HTTP_REFERRER_BLOCKED|API_KEY_IP_ADDRESS_BLOCKED|SERVICE_DISABLED|API_KEY_INVALID|API key not valid/i.test(text);
+  return false;
+}
+
+export function geminiKeyStatus() {
+  return { ...keyState };
+}
+
+export function noteGeminiKey(ok, reason = null) {
+  const changed = keyState.ok !== ok;
+  keyState.ok = ok;
+  keyState.reason = ok ? null : reason;
+  keyState.checkedAt = new Date().toISOString();
+  setGeminiKeyRefused(ok === false);
+  if (!changed) return;
+  if (ok === false) {
+    console.error('[gemini] Google refused GEMINI_API_KEY - ' + reason +
+      '. Maps discovery, Maps lookups, social search and AI drafts are off until the key is replaced.');
+  } else if (ok === true) {
+    console.log('[gemini] key accepted by Google');
+  }
+}
+
+/**
+ * One cheap authenticated call. A network failure or a 5xx says nothing about
+ * the key, so only an explicit refusal marks it bad.
+ */
+export async function probeGeminiKey({ fetchImpl = fetch, timeoutMs = 15000 } = {}) {
+  if (activeProvider() !== 'gemini' || !config.gemini.apiKey) return geminiKeyStatus();
+  if (probing) return probing;
+  lastProbeAt = Date.now();
+  probing = (async () => {
+    try {
+      const res = await fetchImpl(config.gemini.baseUrl + '/v1beta/models?pageSize=1', {
+        headers: { 'x-goog-api-key': config.gemini.apiKey },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.ok) noteGeminiKey(true);
+      else {
+        const text = await res.text().catch(() => '');
+        // Listing models is the most basic call there is: any 401 or 403 here
+        // is about the key or its project.
+        if (res.status === 403 || isKeyRefusal(res.status, text)) noteGeminiKey(false, googleErrorSummary(res.status, text));
+      }
+    } catch (e) {
+      console.warn('[gemini] could not reach Google to check the key: ' + e.message);
+    }
+    return geminiKeyStatus();
+  })();
+  try { return await probing; } finally { probing = null; }
+}
+
+/** The key's state, checked first if nobody has looked yet. */
+export async function ensureGeminiKey() {
+  if (keyState.ok === null) await probeGeminiKey();
+  return geminiKeyStatus();
+}
+
+/**
+ * True once Google has refused the key. Looks again after ten minutes, in the
+ * background, so one strange 401 cannot switch the features off for good.
+ */
+export function geminiKeyRefused() {
+  if (keyState.ok !== false) return false;
+  // Counted from the last attempt, so an unreachable Google is not asked again
+  // on every page load.
+  if (!probing && Date.now() - lastProbeAt > 10 * 60000) {
+    probeGeminiKey().catch(() => {});
+  }
+  return true;
+}
+
+/** Gemini is the provider, a key is set, and Google has not refused it. */
+export function geminiUsable() {
+  return activeProvider() === 'gemini' && Boolean(config.gemini.apiKey) && !geminiKeyRefused();
 }
 
 /* ------------------------------------------------------------------ */
@@ -122,7 +244,7 @@ function isExhausted(model) {
   return exhausted.get(model) === new Date().toISOString().slice(0, 10);
 }
 
-class RateLimiter {
+export class RateLimiter {
   constructor({ rpm, concurrency }) {
     this.rpm = rpm;
     this.concurrency = Math.max(1, concurrency);
@@ -335,7 +457,7 @@ async function callGoogle({ model, system, user, schema, temperature }) {
   if (/^gemini-3/i.test(model)) body.generationConfig.thinkingConfig = { thinkingLevel: 'low' };
 
   const res = await fetch(
-    'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
+    config.gemini.baseUrl + '/v1beta/models/' + model + ':generateContent',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKeyFor('gemini') },
@@ -346,6 +468,7 @@ async function callGoogle({ model, system, user, schema, temperature }) {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    if (isKeyRefusal(res.status, text)) noteGeminiKey(false, googleErrorSummary(res.status, text));
     const err = new Error(model + ' ' + res.status + ': ' + (quotaFrom(text) || text.slice(0, 200)));
     err.status = res.status;
     err.dailyQuota = res.status === 429 && /PerDay/i.test(text);
@@ -353,6 +476,7 @@ async function callGoogle({ model, system, user, schema, temperature }) {
     throw err;
   }
 
+  noteGeminiKey(true);
   const json = await res.json();
   return {
     text: json.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') || '',
@@ -434,7 +558,7 @@ async function callOpenAICompatible({ provider, model, system, user, schema, tem
  */
 export async function generateGrounded({ system, user, shape, fallback, temperature = 0.2, preserveLinks = false, raw = false }) {
   const provider = activeProvider();
-  const model = modelsFor(provider).main;
+  let model = modelsFor(provider).search;
   const started = Date.now();
 
   /**
@@ -449,17 +573,19 @@ export async function generateGrounded({ system, user, shape, fallback, temperat
    */
   const clean = (v) => (raw ? v : preserveLinks ? scrubContactsOnly(v) : scrubDeep(v));
 
-  const bail = (reason) => ({
+  // `retryable` tells a background job whether trying again later can help.
+  const bail = (reason, retryable = false) => ({
     data: clean(fallback ? fallback() : {}),
     model, provider, grounded: false, sources: [], queries: [],
-    latencyMs: Date.now() - started, fallback: true, reason,
+    latencyMs: Date.now() - started, fallback: true, reason, retryable,
   });
 
   if (provider !== 'gemini' || isMock()) {
     return bail('Search grounding needs the Google provider with billing enabled.');
   }
+  if (geminiKeyRefused()) return bail('Google refused GEMINI_API_KEY (' + keyState.reason + ').');
   if (isExhausted(model)) return bail(model + ' is out of quota for today.');
-  if (!(await limiter.acquire(8000))) return bail('Rate limiter busy.');
+  if (!(await limiter.acquire(8000))) return bail('Rate limiter busy.', true);
 
   try {
     const body = {
@@ -476,28 +602,46 @@ export async function generateGrounded({ system, user, shape, fallback, temperat
         }],
       }],
       tools: [{ google_search: {} }],
+      // No thinking override. Measured on gemini-3.6-flash: at "low" the model
+      // answered from memory on every call and never searched; left to its
+      // default it searched on some. An answer that did not search is thrown
+      // away by every caller, so the fast setting only bought a useless reply.
       generationConfig: { temperature },
     };
-    if (/^gemini-3/i.test(model)) body.generationConfig.thinkingConfig = { thinkingLevel: 'low' };
 
-    const res = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
+    const post = () => fetch(
+      config.gemini.baseUrl + '/v1beta/models/' + model + ':generateContent',
       { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKeyFor('gemini') },
         body: JSON.stringify(body), signal: AbortSignal.timeout(TIMEOUT_MS) }
     );
+    let res = await post();
+
+    // The default search model is a fixed name, and Google retires models. If
+    // it has gone, use the main model from now on rather than failing searches.
+    if (res.status === 404 && !process.env.LLM_MODEL_SEARCH && model !== modelsFor(provider).main) {
+      console.warn('[gemini] ' + model + ' is not available for search - using ' + modelsFor(provider).main + ' instead');
+      searchModelGone = true;
+      model = modelsFor(provider).main;
+      res = await post();
+    }
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      if (res.status === 429 && /PerDay/i.test(text)) markExhausted(model);
-      return bail('Grounded search failed: ' + (quotaFrom(text) || res.status));
+      if (isKeyRefusal(res.status, text)) noteGeminiKey(false, googleErrorSummary(res.status, text));
+      const daily = res.status === 429 && /PerDay/i.test(text);
+      if (daily) markExhausted(model);
+      return bail('Grounded search failed: ' + (quotaFrom(text) || googleErrorSummary(res.status, text)),
+        !daily && (res.status === 429 || res.status >= 500));
     }
 
+    noteGeminiKey(true);
     const json = await res.json();
     const cand = json.candidates?.[0];
     const raw = cand?.content?.parts?.map((p) => p.text).join('') || '';
 
     const parsed = parseLooseJson(raw);
-    if (!parsed) return bail('Grounded response was not JSON');
+    // A garbled answer is a bad draw, not a verdict: worth asking again.
+    if (!parsed) return bail('Grounded response was not JSON', true);
 
     const gm = cand?.groundingMetadata || {};
     return {
@@ -512,14 +656,15 @@ export async function generateGrounded({ system, user, shape, fallback, temperat
       fallback: false,
     };
   } catch (e) {
-    return bail(e.message);
+    // Timeouts and dropped connections: worth another go later.
+    return bail(e.message, true);
   } finally {
     limiter.release();
   }
 }
 
 export function geminiSearchAvailable() {
-  return activeProvider() === 'gemini' && Boolean(config.gemini.apiKey);
+  return geminiUsable();
 }
 
 /* ------------------------------------------------------------------ */
@@ -551,6 +696,9 @@ export async function generateJson({
   });
 
   if (isMock()) return bail('No API key for ' + PROVIDERS[provider].label + ' - showing the deterministic template.');
+  if (provider === 'gemini' && geminiKeyRefused()) {
+    return bail('Google refused GEMINI_API_KEY (' + keyState.reason + ') - showing the deterministic template.');
+  }
 
   // Do not spend 90 seconds rediscovering a limit we already hit today.
   if (isExhausted(model)) {
@@ -623,8 +771,12 @@ export function llmStatus() {
     note: PROVIDERS[provider].note,
     configured: !isMock(),
     mock: isMock(),
+    // null until checked; false with the reason once Google refuses the key.
+    keyAccepted: provider === 'gemini' ? keyState.ok : null,
+    keyProblem: provider === 'gemini' ? keyState.reason : null,
     modelMain: models.main,
     modelFast: models.fast,
+    modelSearch: models.search,
     timeoutMs: TIMEOUT_MS,
     exhaustedToday: [...exhausted.entries()]
       .filter(([, day]) => day === new Date().toISOString().slice(0, 10))

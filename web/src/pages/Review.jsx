@@ -228,14 +228,21 @@ export default function Review() {
         </div>
         <div className="page-head-actions">
           {app.modes.mapsLookup && ['hot', 'enrich', 'review'].includes(queue) && (
-            <>
-              <button className="btn" onClick={lookUpOnMaps} disabled={lookingUp} title="Review count, rating, phone and trading status from Google Maps">
-                {lookingUp ? 'Queuing...' : 'Look up Google reviews' + (selected.size ? ' (' + selected.size + ')' : '')}
-              </button>
-              <button className="btn" onClick={enrichSocial} disabled={enrichingSocial} title="Find Instagram, Facebook and LinkedIn presence and followers via Google Search">
-                {enrichingSocial ? 'Queuing...' : 'Find social presence' + (selected.size ? ' (' + selected.size + ')' : '')}
-              </button>
-            </>
+            <button className="btn" onClick={lookUpOnMaps} disabled={lookingUp} title="Review count, rating, phone and trading status from Google Maps">
+              {lookingUp ? 'Queuing...' : 'Look up Google reviews' + (selected.size ? ' (' + selected.size + ')' : '')}
+            </button>
+          )}
+          {app.modes.socialLookup && ['hot', 'enrich', 'review'].includes(queue) && (
+            <button
+              className="btn"
+              onClick={enrichSocial}
+              disabled={enrichingSocial}
+              title={app.modes.socialMethod === 'meta_graph_api'
+                ? "Followers, posts and last post from Instagram's own API"
+                : 'Instagram handle and Facebook/LinkedIn pages via Google search - follower counts are rarely in search results'}
+            >
+              {enrichingSocial ? 'Queuing...' : 'Find social presence' + (selected.size ? ' (' + selected.size + ')' : '')}
+            </button>
           )}
           {queue === 'confirm' && visible.length > 0 && (
             <button className="btn" onClick={researchVerify} disabled={!!researching}>

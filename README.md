@@ -90,7 +90,7 @@ real data always beats generated data, so Gemini is never chosen automatically.
 | Source | Trust | Notes |
 |---|---|---|
 | `places` | Authoritative | Google Places API (New). ~$0.035/call at the Enterprise field mask. `rating`, `userRatingCount`, `phone` and `websiteUri` are all Enterprise fields — there is no cheaper mask that still produces a usable lead. `reviews` is never requested. |
-| `maps` | Looked up, not recalled | Google Maps through Gemini's Maps grounding: rating, review count, phone, website and place id for real listings. Picked automatically when a Gemini key is set and Places is not. Needs a working Google AI Studio key (`AIza…`). |
+| `maps` | Looked up, not recalled | Google Maps through Gemini's Maps grounding: rating, review count, phone, website and place id for real listings. Picked automatically when a Gemini key is set and Places is not. Needs a working Google AI Studio key - checked with Google at boot. |
 | `osm` | **Real, free, default** | OpenStreetMap via Overpass. Businesses a contributor physically surveyed, with coordinates. No key, no quota. ~130 businesses per 3km sweep, roughly 20% carry a phone. No ratings — that's Google's data — so leads land at `verified` and need a review count before they qualify. |
 | `gemini` | **Unverified** | Model recall. Lands every lead in `discovered`. No phone is ever produced. Opt in explicitly. |
 | `mock` | Synthetic | For working on the UI. |
@@ -98,6 +98,33 @@ real data always beats generated data, so Gemini is never chosen automatically.
 OpenStreetMap tags are broad - `healthcare=clinic` is every clinic in the city - so each result is
 sorted into the right category from its name and specialist tags. A general clinic found while
 sweeping "cosmetic surgery" is a polyclinic, and is left out if you did not ask for polyclinics.
+
+### How fast a Maps sweep is, and why
+
+Each category is a few differently-worded Maps searches ("jewellery store", "independent or
+family-run jewellery store", "well established jewellery store"), and they now run side by side,
+two categories at a time, under one limiter for every Maps call (`MAPS_CONCURRENCY`,
+`DISCOVERY_CATEGORY_CONCURRENCY`). On gemini-3.x flash the calls run at `minimal` thinking
+(`MAPS_THINKING_LEVEL`): at the default level one call took 45-70s and 6-8k thought tokens; at
+minimal it takes about 17s with none, and the businesses both settings found carried identical
+ratings, review counts, phones and place ids. A real 3-category sweep of Kothrud took 57s and found
+125 businesses; the same sweep run one search at a time used to take around ten minutes.
+
+The server log follows every sweep - a line per category with what it found, added and skipped, and
+a summary at the end - and the worker reports what it got through every 30 seconds. A key Google
+refuses, a missing model or the day's quota running out stops the sweep at once with Google's own
+reason, instead of being swallowed category by category. The key is also checked at boot, and a
+refused one shows on the source card, in Settings and in the log.
+
+Maps hands back a listing id in one of three shapes - a place id, a feature id (`0x…:0x…`) or a
+bare CID - and every lead gets a link that opens its listing directly. The same name at the same
+street address is treated as one shop even when two searches return it under two ids.
+
+Maps answers carry an address but no coordinates. A lead is placed on the map only when OpenStreetMap
+finds the building or the business itself under its own name; a street or a suburb is an area, not a
+location, and an address it cannot read stays unplaced. (The geocoder used to fall back to the area
+picker's offline list, which put every unreadable address on Aundh - and the out-of-area check then
+excluded real Kothrud clinics as 5.7 km away. Cleanup repairs leads that were hit.)
 
 ### Google Maps lookup
 
@@ -243,6 +270,25 @@ when the account demonstrably belongs to the business (its handle is on their si
 their site, or it carries their name); otherwise it is a candidate a person accepts. A personal
 account reads as unknown, never as "no Instagram".
 
+Without a Meta token, **Find social presence** searches Google (grounded, on `LLM_MODEL_SEARCH`) for
+the Instagram handle and the Facebook and LinkedIn pages. What it is trusted with was measured: a
+model that did not actually search still answered, with a confident handle and an invented "last
+post" date, and across a dozen real searches no follower count came back at all. So:
+
+- nothing is written unless the search ran (it gets two tries), and the result says when it did not;
+- a handle is written when it reads as the business's name, otherwise it waits as a candidate;
+- follower counts and post dates need a cited Instagram page *and* an account known to be theirs
+  (handle off their own site, entered by a person, or confirmed by Meta); otherwise candidates;
+- a dormant account found this way is flagged for the rep to check before saying it to the owner.
+
+Search runs by itself only for tier A and B leads after their site audit, once a fortnight at most;
+the bulk button queues the rest, best prospects first, never twice.
+
+The dependable route to the numbers without Meta is a person: the lead's **Details → Social media**
+card has a **Find on Google** link, and pasting the line Google shows under the profile
+(`1,234 Followers, 56 Following, 78 Posts - … (@handle)`) saves handle, followers and posts as the
+rep's own, with an optional last-post date. Ten seconds a lead.
+
 LinkedIn followers and "are they running ads" still have no API for this. They stay **fields in the
 rep's ten-minute audit**. Anything a human types beats anything fetched, and the score updates on save.
 
@@ -259,7 +305,7 @@ npm run cleanup -- --apply    # do it
 
 | Step | What it does |
 |---|---|
-| Normalise | Phones read in the right country (`020 2563 6999` is `+912025636999`, not Egypt) and typed mobile/landline/invalid; websites, emails, Instagram handles and localities cleaned; dedupe keys rebuilt for every script |
+| Normalise | Phones read in the right country (`020 2563 6999` is `+912025636999`, not Egypt) and typed mobile/landline/invalid; websites, emails, Instagram handles and localities cleaned; dedupe keys rebuilt for every script; coordinates that came off the area picker's offline list (where the old geocoder put every address it could not read) removed, with the "out of area" exclusions they caused |
 | Reclassify | Directory leads filed under the wrong category moved to the right one |
 | Exclude | Chains, government bodies and placeholder listings marked, with reasons |
 | Merge | The same business entered twice becomes one: activities, AI history and proposals move to the survivor, which inherits every field it was missing. Never two pipeline leads |

@@ -36,8 +36,13 @@ export function adLibraryLinks(lead) {
   }
   if (lead.name) {
     links.instagram_search = 'https://www.instagram.com/explore/search/keyword/?q=' + q;
+    // Google shows "N Followers, N Following, N Posts" under each profile with
+    // no login - the line a rep pastes back in.
+    links.instagram_google = 'https://www.google.com/search?q=' +
+      encodeURIComponent('site:instagram.com "' + lead.name + '"' + (lead.locality ? ' ' + lead.locality : ''));
     links.linkedin_search = 'https://www.linkedin.com/search/results/companies/?keywords=' + q;
   }
+  if (lead.ig_handle) links.instagram_profile = 'https://www.instagram.com/' + encodeURIComponent(lead.ig_handle) + '/';
   return links;
 }
 
