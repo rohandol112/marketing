@@ -113,36 +113,86 @@ function query(args, pass) {
   return `${cat?.q || cat?.label || args.categoryId} near ${args.areaLabel}, ${args.regionCode || ''}. Centre ${args.center.lat}, ${args.center.lng}; target radius ${args.radiusM} metres. Batch ${pass + 1}: ${angles[pass % angles.length]}. Find up to ${cfg.results} candidates. Missing or unverified location must be flagged, not guessed.`;
 }
 
+/**
+ * Why a provider call failed, in words that point at the cause. A request
+ * limit read as "network/request failure" and an output problem as "request or
+ * output error", which sent a failed sweep's diagnosis to the wrong place.
+ * Never includes upstream bodies, which can echo credential-bearing URLs.
+ */
+export function failureReason(e) {
+  if (e.message === 'request_limit') return 'request limit reached';
+  if (e.status) return 'HTTP ' + e.status;
+  if (['TimeoutError', 'AbortError'].includes(e.name)) return 'provider timeout after ' + Math.round(cfg.timeoutMs / 1000) + 's (not a rejected API key)';
+  if (e instanceof SyntaxError) return 'invalid JSON output';
+  const code = e.cause?.code;
+  return 'network/request failure' + (typeof code === 'string' && /^[A-Z][A-Z0-9_]{2,40}$/.test(code) ? ' (' + code + ')' : '');
+}
+
+/**
+ * Reasoning effort, one step down. Measured 2026-10-31 on the production
+ * discovery request (Kothrud coaching classes, 16,000 output tokens): max
+ * spent 15,715 tokens reasoning in 147s and stopped incomplete with no answer
+ * - every category, every sweep; high answered in 60s with 16 businesses and
+ * 3,025 reasoning tokens; medium in 43s with 11.
+ */
+const LOWER_EFFORT = { max: 'high', xhigh: 'high', high: 'medium' };
+
+// Process-local, like Gemini model cooldowns: once an effort has run out of
+// output budget, later categories start at the one that answered.
+let lunaStepDown = null;
+export const lunaEffortNow = () => lunaStepDown || cfg.lunaEffort;
+export function resetLunaEffort() { lunaStepDown = null; }
+
 async function lunaDiscovery(args) {
   let calls = 0, tokensIn = 0, tokensOut = 0, costUsd = 0, toolCalls = 0, mapsCalls = 0;
   const leads = [], warnings = [];
+  const request = (pass, effort) => withRetry(async () => {
+    await lunaRate.acquire();
+    args.onAttempt?.();
+    calls++;
+    const tools = [{ type: 'web_search', user_location: { type: 'approximate', country: args.regionCode || 'IN' } }];
+    if (cfg.mapsMcp && cfg.mapsKey) tools.push({ type: 'mcp', server_label: 'google_maps', server_url: 'https://mapstools.googleapis.com/mcp',
+      headers: { 'X-Goog-Api-Key': cfg.mapsKey }, allowed_tools: ['search_places'], require_approval: 'never' });
+    const res = await fetch('https://api.openai.com/v1/responses', { method: 'POST',
+      headers: { Authorization: 'Bearer ' + cfg.openaiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: cfg.lunaModel, reasoning: { effort }, store: false,
+        max_output_tokens: cfg.maxOutput, max_tool_calls: 3, tool_choice: 'required', include: ['web_search_call.action.sources'], tools,
+        instructions: INSTRUCTIONS + '\nUse web search first (at most 2 search actions). Use Maps only to resolve missing listing details; pageSize at most 5 and includeExtendedDetails false. Do not claim a precise radius match from text alone.', input: query(args, pass) }),
+      signal: AbortSignal.timeout(cfg.timeoutMs) });
+    if (!res.ok) throw requestError(res.status, res.headers.get('retry-after'));
+    return res.json();
+  }, { retryTimeout: false });
+  // A response that ran out of budget is still billed: count it either way.
+  const account = response => {
+    const usage = response.usage || {}, details = usage.input_tokens_details || {};
+    tokensIn += usage.input_tokens || 0; tokensOut += usage.output_tokens || 0;
+    const searches = response.tool_usage?.web_search?.num_requests;
+    const webCount = searches ?? (response.output || []).filter(o => o.type === 'web_search_call' && o.action?.type === 'search').length;
+    toolCalls += webCount;
+    mapsCalls += (response.output || []).filter(o => o.type === 'mcp_call').length;
+    costUsd += (((usage.input_tokens || 0) - (details.cached_tokens || 0) - (details.cache_write_tokens || 0)) * .1
+      + (details.cached_tokens || 0) * .01 + (details.cache_write_tokens || 0) * .125 + (usage.output_tokens || 0) * .5) / 1e6 + webCount * .01;
+  };
   for (let pass = 0; pass < (args.passes || 1); pass++) {
     try {
-      const response = await withRetry(async () => {
-        await lunaRate.acquire();
-        args.onAttempt?.();
-        calls++;
-        const tools = [{ type: 'web_search', user_location: { type: 'approximate', country: args.regionCode || 'IN' } }];
-        if (cfg.mapsMcp && cfg.mapsKey) tools.push({ type: 'mcp', server_label: 'google_maps', server_url: 'https://mapstools.googleapis.com/mcp',
-          headers: { 'X-Goog-Api-Key': cfg.mapsKey }, allowed_tools: ['search_places'], require_approval: 'never' });
-        const res = await fetch('https://api.openai.com/v1/responses', { method: 'POST',
-          headers: { Authorization: 'Bearer ' + cfg.openaiKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: cfg.lunaModel, reasoning: { effort: cfg.lunaEffort }, store: false,
-            max_output_tokens: cfg.maxOutput, max_tool_calls: 3, tool_choice: 'required', include: ['web_search_call.action.sources'], tools,
-            instructions: INSTRUCTIONS + '\nUse web search first (at most 2 search actions). Use Maps only to resolve missing listing details; pageSize at most 5 and includeExtendedDetails false. Do not claim a precise radius match from text alone.', input: query(args, pass) }),
-          signal: AbortSignal.timeout(cfg.timeoutMs) });
-        if (!res.ok) throw requestError(res.status, res.headers.get('retry-after'));
-        return res.json();
-      }, { retryTimeout: false });
-      const usage = response.usage || {}, details = usage.input_tokens_details || {};
-      tokensIn += usage.input_tokens || 0; tokensOut += usage.output_tokens || 0;
-      const searches = response.tool_usage?.web_search?.num_requests;
-      const webCount = searches ?? (response.output || []).filter(o => o.type === 'web_search_call' && o.action?.type === 'search').length;
-      toolCalls += webCount;
-      mapsCalls += (response.output || []).filter(o => o.type === 'mcp_call').length;
-      costUsd += (((usage.input_tokens || 0) - (details.cached_tokens || 0) - (details.cache_write_tokens || 0)) * .1
-        + (details.cached_tokens || 0) * .01 + (details.cache_write_tokens || 0) * .125 + (usage.output_tokens || 0) * .5) / 1e6 + webCount * .01;
-      if (response.status !== 'completed') { warnings.push('Luna batch incomplete; no partial JSON imported.'); continue; }
+      const effort = lunaEffortNow();
+      let response = await request(pass, effort);
+      account(response);
+      const lower = LOWER_EFFORT[effort];
+      if (response.status === 'incomplete' && response.incomplete_details?.reason === 'max_output_tokens' && lower) {
+        if (!lunaStepDown || lunaStepDown === effort) {
+          lunaStepDown = lower;
+          console.warn('[discovery] Luna at ' + effort + ' effort spent its whole ' + cfg.maxOutput + '-token output budget reasoning; using ' + lower + ' from now on. Set DISCOVERY_LUNA_EFFORT=' + lower + ' to skip the wasted call.');
+        }
+        warnings.push('Luna at ' + effort + ' effort used its whole output budget reasoning and returned nothing; retried at ' + lower + '. Set DISCOVERY_LUNA_EFFORT=' + lower + '.');
+        response = await request(pass, lower);
+        account(response);
+      }
+      if (response.status !== 'completed') {
+        const reason = response.incomplete_details?.reason;
+        warnings.push('Luna batch incomplete' + (reason ? ' (' + reason + ')' : '') + '; no partial JSON imported.');
+        continue;
+      }
       const sources = [], chunks = [];
       for (const item of response.output || []) {
         for (const src of item.action?.sources || []) if (src.url) sources.push(src.url);
@@ -157,7 +207,7 @@ async function lunaDiscovery(args) {
       }
       const text = (response.output || []).flatMap(o => o.type === 'message' ? o.content || [] : []).map(c => c.text || '').join('');
       leads.push(...normalizeCandidates(jsonText(text).businesses, { ...args, provider: 'luna', model: cfg.lunaModel, sources, chunks }));
-    } catch (e) { warnings.push('Luna batch failed: ' + (e.status ? 'HTTP ' + e.status : ['TimeoutError', 'AbortError'].includes(e.name) ? 'provider timeout after ' + Math.round(cfg.timeoutMs / 1000) + 's (not a rejected API key)' : e instanceof SyntaxError ? 'invalid JSON output' : 'network/request failure' + (['ECONNRESET', 'ENOTFOUND', 'UND_ERR_CONNECT_TIMEOUT'].includes(e.cause?.code) ? ' (' + e.cause.code + ')' : ''))); if ([401, 403].includes(e.status)) break; }
+    } catch (e) { warnings.push('Luna batch failed: ' + failureReason(e)); if ([401, 403].includes(e.status) || e.message === 'request_limit') break; }
   }
   return { leads, calls, tokensIn, tokensOut, costUsd, toolCalls, mapsCalls, warnings, costIncomplete: mapsCalls > 0 || cfg.lunaModel !== 'gpt-6-luna' };
 }
@@ -205,7 +255,7 @@ async function geminiDiscovery(args) {
       }, { retry: cfg.retries > 0, onWarning: warning => warnings.push(warning) });
       if (found) leads.push(...found);
     } catch (e) {
-      warnings.push('Gemini stopped: ' + (e.status ? 'HTTP ' + e.status : 'request or output error'));
+      warnings.push('Gemini stopped: ' + failureReason(e));
       break;
     }
   }

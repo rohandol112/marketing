@@ -214,8 +214,12 @@ export async function runDiscovery({ runId }) {
     if (source === 'combined') {
       const result = await discoverCombined({ categoryId, areaLabel: run.area_label, center, radiusM,
         regionCode: run.region_code || undefined, passes: maxPages,
+        // Counted, never refused. The request limit stops new categories in
+        // worker() below; refusing a started category's follow-up call (Gemini's
+        // extraction) threw away the search it had already paid for. With every
+        // category started at once, that was every category: a 73-category
+        // sweep spent its 100 requests and kept nothing.
         onAttempt: () => {
-          if (params.requestLimit > 0 && combinedRequests >= params.requestLimit) throw new Error('request_limit');
           combinedRequests++;
           void progress();
         } });
@@ -486,7 +490,11 @@ export async function runDiscovery({ runId }) {
    * throttles per IP, and recall carries state from one category to the next.
    */
   const total = categories.length;
-  const concurrency = source === 'combined' ? total : source === 'maps' ? Math.max(1, Math.min(config.maps.categoryConcurrency, total)) : 1;
+  // Combined sweeps run a bounded number of categories side by side, so results
+  // land as categories finish and the request limit can stop new ones. All 73
+  // at once fired 146 provider calls in the same second.
+  const concurrency = source === 'combined' ? Math.max(1, Math.min(config.combined.categoryConcurrency, total))
+    : source === 'maps' ? Math.max(1, Math.min(config.maps.categoryConcurrency, total)) : 1;
   const inFlight = new Set();
   let next = 0;
   let done = 0;
@@ -508,6 +516,7 @@ export async function runDiscovery({ runId }) {
     tag + ' started: ' + source + ' sweep of ' + total + ' categor' + (total === 1 ? 'y' : 'ies') + ' within '
     + (radiusM / 1000) + ' km of ' + run.area_label
     + (source === 'maps' ? ' (' + maxPages + ' searches per category, ' + concurrency + ' categories at a time)' : '')
+    + (source === 'combined' ? ' (' + concurrency + ' categories at a time)' : '')
   );
 
   async function worker() {

@@ -1,6 +1,6 @@
 # Luna + Gemini discovery
 
-Select **Luna + Gemini** in Discovery. Luna Max and one successful Gemini model search each selected category in parallel. Gemini tries 3.8 Flash, 3.7 Flash, 3.6 Flash, 3.5 Flash, then 3.5 Flash Lite, using medium thinking where supported. It stops on the first supported response rather than running all five models for extra results. Results are merged, then go through existing exclusions, deduplication, audits, geocoding and human review. Existing modes and stored records are preserved. No migration or seed is required.
+Select **Luna + Gemini** in Discovery. Luna (high effort) and one successful Gemini model search each selected category in parallel. Gemini tries 3.8 Flash, 3.7 Flash, 3.6 Flash, 3.5 Flash, then 3.5 Flash Lite, using medium thinking where supported. It stops on the first supported response rather than running all five models for extra results. Results are merged, then go through existing exclusions, deduplication, audits, geocoding and human review. Existing modes and stored records are preserved. No migration or seed is required.
 
 ## Deployment environment
 
@@ -21,9 +21,10 @@ Optional controls, with defaults:
 DISCOVERY_SOURCE=combined
 DISCOVERY_COMBINED_PASSES=1
 DISCOVERY_REQUESTS_PER_MINUTE=600
+DISCOVERY_COMBINED_CONCURRENCY=8
 DISCOVERY_PROVIDER_TIMEOUT_MS=180000
 DISCOVERY_LUNA_MODEL=gpt-6-luna
-DISCOVERY_LUNA_EFFORT=max
+DISCOVERY_LUNA_EFFORT=high
 DISCOVERY_GEMINI_MODELS=gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite
 DISCOVERY_GEMINI_THINKING=medium
 DISCOVERY_GEMINI_TOOL=search
@@ -33,7 +34,7 @@ DISCOVERY_MAX_OUTPUT_TOKENS=16000
 DISCOVERY_RETRIES=2
 ```
 
-Use `DISCOVERY_GEMINI_TOOL=maps` for native Maps instead of Google Search. Restart after changing environment values. Explicit existing values override the new defaults: set `DISCOVERY_LUNA_EFFORT=max` and update `DISCOVERY_GEMINI_MODELS` and `DISCOVERY_GEMINI_THINKING` if they are already set. The five default model IDs were listed by the configured key's model-list endpoint on 2026-10-30; availability and tool support may change. Discovery is independent of `LLM_PROVIDER`; configure drafts and research separately below.
+Use `DISCOVERY_GEMINI_TOOL=maps` for native Maps instead of Google Search. Restart after changing environment values. Explicit existing values override the new defaults: set `DISCOVERY_LUNA_EFFORT=high` and update `DISCOVERY_GEMINI_MODELS` and `DISCOVERY_GEMINI_THINKING` if they are already set. The five default model IDs were listed by the configured key's model-list endpoint on 2026-10-30; availability and tool support may change. Discovery is independent of `LLM_PROVIDER`; configure drafts and research separately below.
 
 ## Terra drafts and research
 
@@ -58,6 +59,8 @@ Optional ceilings are `LLM_MAX_OUTPUT_TOKENS=8192` for routine generation and `L
 
 ## Reliability and limits
 
+- **Luna effort: use `high`, not `max`.** Measured on 2026-10-31 with the production discovery request (coaching classes, Kothrud, 16,000 output tokens): `max` reasoned for 15,715 tokens over 147 seconds and stopped `incomplete` without an answer, on every category of every sweep; `high` answered in 60 seconds with 16 businesses and 3,025 reasoning tokens; `medium` in 43 seconds with 11. If Luna runs out of output budget while reasoning, the call is retried once at the next lower effort, and that effort is used for the rest of the process (the warning names the setting to change). The wasted call is still billed and counted.
+
 - Combined discovery defaults to one pass per provider per category: one Luna discovery request and one Gemini discovery pass. Set `DISCOVERY_COMBINED_PASSES=1` for this default; the Discovery dropdown can explicitly select more. The server uses the same default when a request omits `maxPages`. Other discovery sources retain `PLACES_MAX_PAGES`. Existing saved runs retain their explicit pass count. Extraction, tool actions and failure retries can add requests beyond those two discovery passes.
 - Each pass asks for up to 25 candidates by default (`DISCOVERY_RESULTS_PER_PASS=25`), so the default pair targets up to 50 before overlap, evidence checks and existing-record deduplication. This is a prompt target, not guaranteed unique contacts. Providers may return fewer; raising the target can increase tokens and tool activity without increasing the number of discovery passes.
 
@@ -65,7 +68,7 @@ Optional ceilings are `LLM_MAX_OUTPUT_TOKENS=8192` for routine generation and `L
 - If the Gemini chain produces no supported response, it waits briefly (at least one second, with jitter) and retries the transiently failed models once, in the same strongest-to-weakest order. Success ends the second pass; there is no third pass. `DISCOVERY_RETRIES=0` disables this delayed retry cascade. `Retry-After` is honored per model; delays over 60 seconds exclude that model from the immediate second pass. A successful research response may still require a separate extraction request.
 - Overloaded, throttled or timed-out Gemini models enter a process-local cooldown: 60 seconds, doubling on repeated failures up to five minutes, or longer when `Retry-After` requires it. Other categories skip cooling models. A missing model (404) is skipped for five minutes. Successful transport clears cooldown; expiration allows recovery. Process restarts clear this state, and calls already in flight are not cancelled. Authentication and daily-quota errors stop Gemini immediately.
 - Both credentials must be configured to select this mode. During a run, a failed provider does not discard the other's results. Warnings identify partial results.
-- The UI request limit defaults to 0 (no request cutoff). A positive optional limit includes retries and fallback attempts; it does not bound the invoice. Combined mode schedules all selected categories concurrently. Separate rolling-minute limiters permit at most 600 direct OpenAI discovery request starts and 600 direct Gemini discovery request starts per server process. Retries, extraction and thinking-compatibility retries count against their respective provider budgets. `DISCOVERY_REQUESTS_PER_MINUTE` can lower this ceiling; values over 600 are clamped. Requests queue before their network timeout starts. `DISCOVERY_COMBINED_CONCURRENCY` is no longer used. The limiter does not cover provider-internal search/MCP tool actions, separate research/drafting endpoints, TPM, or other server replicas. Existing saved runs keep any explicit request limit. Tool actions inside requests remain bounded. Cancellation stops new categories; already-running calls may finish.
+- The UI request limit defaults to 0 (no request cutoff). A positive limit stops *new categories* once reached; categories already running finish their follow-up calls (Gemini extraction, retries), so a run can end a few requests over the limit and never throws away a search it already paid for. It does not bound the invoice. Combined mode runs `DISCOVERY_COMBINED_CONCURRENCY` categories side by side (default 8); each runs both providers in parallel. Separate rolling-minute limiters permit at most 600 direct OpenAI discovery request starts and 600 direct Gemini discovery request starts per server process. Retries, extraction and thinking-compatibility retries count against their respective provider budgets. `DISCOVERY_REQUESTS_PER_MINUTE` can lower this ceiling; values over 600 are clamped. Requests queue before their network timeout starts. The limiter does not cover provider-internal search/MCP tool actions, separate research/drafting endpoints, TPM, or other server replicas. Existing saved runs keep any explicit request limit. Tool actions inside requests remain bounded. Cancellation stops new categories; already-running calls may finish.
 - Request counts update as calls start; found/new/duplicate and token counts update as categories finish. Progress writes are serialized so older updates cannot overwrite newer progress. Each category still merges both providers before ingestion.
 - Discovery provider timeouts default to 180 seconds, configured by `DISCOVERY_PROVIDER_TIMEOUT_MS` independently of drafting timeout. Luna timeouts are not automatically retried through repeated full waiting periods; retryable HTTP/network failures retain bounded retries. Timeout, invalid JSON and network errors are distinguished from HTTP authentication errors without exposing upstream response bodies or credentials.
 - Counts are variable, not a guarantee of 500 contacts or exhaustive geographic coverage. Radius membership is explicitly unverified without sourced coordinates.

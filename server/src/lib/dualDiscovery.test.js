@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withRetry, normalizeCandidates, mergeCandidates, discoverCombined } from './dualDiscovery.js';
+import { withRetry, normalizeCandidates, mergeCandidates, discoverCombined, failureReason, lunaEffortNow, resetLunaEffort } from './dualDiscovery.js';
 import config from '../config.js';
 import { callMaps } from './mapsDiscovery.js';
 
@@ -160,4 +160,48 @@ test('Gemini transport preserves Retry-After for cascade scheduling', async () =
   await assert.rejects(callMaps({ model: 'test', system: 'test', user: 'test',
     fetchImpl: async () => ({ ok: false, status: 429, headers: new Headers({ 'retry-after': '90' }), text: async () => 'temporary rate limit' }),
   }), e => e.status === 429 && e.retryAfterMs === 90000);
+});
+
+test('Luna that spends its whole output budget reasoning is asked again one effort lower, and stays there', async () => {
+  // Measured on production's request: max effort reasoned for 15,715 of 16,000
+  // tokens and answered nothing, on every category; high answered in 60s.
+  const saved = { fetch: globalThis.fetch, combined: { ...config.combined }, key: config.gemini.apiKey };
+  config.combined.retries = 0; config.combined.mapsMcp = false; config.combined.lunaEffort = 'max';
+  config.combined.geminiModels = []; config.gemini.apiKey = 'test';
+  resetLunaEffort();
+  const efforts = [];
+  globalThis.fetch = async (target, options) => {
+    const effort = JSON.parse(options.body).reasoning.effort;
+    efforts.push(effort);
+    if (effort === 'max') {
+      return { ok: true, json: async () => ({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' },
+        usage: { input_tokens: 27402, output_tokens: 15715 }, output: [{ type: 'reasoning' }] }) };
+    }
+    return { ok: true, json: async () => ({ status: 'completed', usage: { input_tokens: 25922, output_tokens: 6790 },
+      output: [{ type: 'message', content: [{ text: JSON.stringify({ businesses: [{ name: 'Clinic A', phone: '9876543210',
+        evidence: [{ field: 'phone', url: citation }] }] }), annotations: [{ url: citation }] }] }] }) };
+  };
+  try {
+    const first = await discoverCombined(args);
+    assert.deepEqual(efforts, ['max', 'high']);
+    assert.equal(first.leads.length, 1);
+    assert.match(first.warnings.join(' '), /used its whole output budget reasoning.*retried at high.*DISCOVERY_LUNA_EFFORT=high/);
+    assert.ok(first.report.providers.luna.tokensOut >= 15715 + 6790, 'the wasted call is still counted');
+    assert.equal(lunaEffortNow(), 'high');
+    efforts.length = 0;
+    await discoverCombined(args);
+    assert.deepEqual(efforts, ['high'], 'later categories skip the effort that cannot answer');
+  } finally {
+    resetLunaEffort();
+    globalThis.fetch = saved.fetch; Object.assign(config.combined, saved.combined); config.gemini.apiKey = saved.key;
+  }
+});
+
+test('failure reasons name the cause, not "network/request failure" for everything', () => {
+  assert.equal(failureReason(new Error('request_limit')), 'request limit reached');
+  assert.equal(failureReason(Object.assign(new Error('x'), { status: 429 })), 'HTTP 429');
+  assert.match(failureReason(Object.assign(new Error('x'), { name: 'TimeoutError' })), /^provider timeout after \d+s/);
+  assert.equal(failureReason(new SyntaxError('bad')), 'invalid JSON output');
+  assert.equal(failureReason(Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } })), 'network/request failure (UND_ERR_HEADERS_TIMEOUT)');
+  assert.equal(failureReason(Object.assign(new TypeError('fetch failed'), { cause: { code: 'https://x?key=secret' } })), 'network/request failure');
 });

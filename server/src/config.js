@@ -104,10 +104,13 @@ export const config = {
   combined: {
     rpm: Math.max(1, Math.min(600, num(process.env.DISCOVERY_REQUESTS_PER_MINUTE, 600))),
     timeoutMs: Math.max(30000, num(process.env.DISCOVERY_PROVIDER_TIMEOUT_MS, 180000)),
+    // Categories swept side by side; each runs both providers in parallel.
+    categoryConcurrency: Math.max(1, num(process.env.DISCOVERY_COMBINED_CONCURRENCY, 8)),
     passes: Math.max(1, Math.min(3, num(process.env.DISCOVERY_COMBINED_PASSES, 1))),
     openaiKey: process.env.OPENAI_API_KEY || '',
     lunaModel: process.env.DISCOVERY_LUNA_MODEL || 'gpt-6-luna',
-    lunaEffort: process.env.DISCOVERY_LUNA_EFFORT || 'max',
+    // max spends the whole output budget reasoning and answers nothing (lib/dualDiscovery.js).
+    lunaEffort: process.env.DISCOVERY_LUNA_EFFORT || 'high',
     geminiModels: (process.env.DISCOVERY_GEMINI_MODELS || 'gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite').split(',').map(s => s.trim()).filter(Boolean),
     thinking: process.env.DISCOVERY_GEMINI_THINKING || 'medium',
     geminiTool: process.env.DISCOVERY_GEMINI_TOOL === 'maps' ? 'google_maps' : 'google_search',
