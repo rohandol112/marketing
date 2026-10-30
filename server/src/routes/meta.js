@@ -9,6 +9,7 @@ import { estimateSweep } from '../lib/places.js';
 import { mapsLookupAvailable, thinkingFor } from '../lib/mapsDiscovery.js';
 import { instagramAvailable } from '../lib/instagram.js';
 import { EXCLUSION_LABELS } from '../lib/classify.js';
+import { combinedAvailable } from '../lib/dualDiscovery.js';
 
 const app = new Hono();
 
@@ -48,6 +49,12 @@ app.get('/bootstrap', async (c) => {
     // What the operator can actually pick, with the trade-off stated. Whether a
     // source is usable is a server fact, not something the UI should guess.
     discoverySources: [
+      {
+        id: 'combined', label: 'Luna + Gemini', available: combinedAvailable(), recommended: false,
+        unavailableReason: combinedAvailable() ? null : 'Set OPENAI_API_KEY and GEMINI_API_KEY',
+        note: 'Both providers discover businesses in each category. Supported results are merged before the existing review process.',
+        caveat: 'Search coverage and contact details vary. Partial failures keep successful results. Run reports show each provider’s contribution and estimated costs.',
+      },
       {
         id: 'maps',
         label: 'Google Maps (via Gemini)',

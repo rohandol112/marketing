@@ -90,6 +90,20 @@ export const config = {
   },
 
   verboseAudit: bool(process.env.VERBOSE_AUDIT, false),
+
+  combined: {
+    openaiKey: process.env.OPENAI_API_KEY || '',
+    lunaModel: process.env.DISCOVERY_LUNA_MODEL || 'gpt-6-luna',
+    lunaEffort: process.env.DISCOVERY_LUNA_EFFORT || 'medium',
+    geminiModels: (process.env.DISCOVERY_GEMINI_MODELS || 'gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite').split(',').map(s => s.trim()).filter(Boolean),
+    thinking: process.env.DISCOVERY_GEMINI_THINKING || 'low',
+    geminiTool: process.env.DISCOVERY_GEMINI_TOOL === 'maps' ? 'google_maps' : 'google_search',
+    mapsKey: process.env.MAPS_MCP_API_KEY || process.env['X-Goog-Api-Key'] || '',
+    mapsMcp: bool(process.env.DISCOVERY_MAPS_MCP, true),
+    results: Math.max(1, Math.min(30, num(process.env.DISCOVERY_RESULTS_PER_PASS, 15))),
+    maxOutput: Math.max(2048, Math.min(64000, num(process.env.DISCOVERY_MAX_OUTPUT_TOKENS, 16000))),
+    retries: Math.max(0, Math.min(3, num(process.env.DISCOVERY_RETRIES, 2))),
+  },
 };
 
 /**
