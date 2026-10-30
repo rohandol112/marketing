@@ -129,7 +129,7 @@ export async function callMaps({ model, system = SYSTEM, user, timeoutMs = 90000
     tools: groundingTool ? [{ [groundingTool]: {} }] : undefined,
     generationConfig,
   };
-  const post = () => { onRequest?.(); return fetchImpl(config.gemini.baseUrl + '/v1beta/models/' + model + ':generateContent', {
+  const post = async () => { await onRequest?.(); return fetchImpl(config.gemini.baseUrl + '/v1beta/models/' + model + ':generateContent', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.gemini.apiKey },
     body: JSON.stringify(body),

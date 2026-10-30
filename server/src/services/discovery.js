@@ -485,7 +485,7 @@ export async function runDiscovery({ runId }) {
    * throttles per IP, and recall carries state from one category to the next.
    */
   const total = categories.length;
-  const concurrency = source === 'combined' ? Math.min(config.combined.concurrency, total) : source === 'maps' ? Math.max(1, Math.min(config.maps.categoryConcurrency, total)) : 1;
+  const concurrency = source === 'combined' ? total : source === 'maps' ? Math.max(1, Math.min(config.maps.categoryConcurrency, total)) : 1;
   const inFlight = new Set();
   let next = 0;
   let done = 0;
