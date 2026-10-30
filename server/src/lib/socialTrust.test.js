@@ -81,6 +81,9 @@ test('a quiet account found by search is flagged for the rep to check, not state
   assert.match(prompt, /POSSIBLY URGENT, NOT CONFIRMED/);
   assert.doesNotMatch(prompt, /MOST URGENT, VERIFIED/);
   assert.match(prompt, /from a Google search result, not Instagram itself/);
+  const openaiLead = { ...lead, score: 60, tier: 'B', social_audit: { instagram: { ...quiet, source: 'openai_web_search' } } };
+  assert.ok(urgentIssue(openaiLead).endsWith(UNCONFIRMED));
+  assert.match(leadContext(openaiLead), /from a web search result, not Instagram itself/);
 });
 
 test('an address key ignores case, punctuation and the country, and refuses a bare neighbourhood', async () => {

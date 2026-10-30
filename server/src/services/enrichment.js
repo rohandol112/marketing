@@ -1,7 +1,7 @@
 import knex, { logUsage } from '../db/knex.js';
 import { lookupBusiness, mapsLookupAvailable } from '../lib/mapsDiscovery.js';
 import { lookupInstagram, instagramAvailable } from '../lib/instagram.js';
-import { geminiSearchAvailable, geminiKeyStatus } from '../lib/llm.js';
+import { geminiSearchAvailable, geminiKeyStatus, researchMethod } from '../lib/llm.js';
 import { refineCategory } from '../lib/classify.js';
 import { CATEGORY_BY_ID } from '../lib/categories.js';
 import {
@@ -42,7 +42,7 @@ export async function enrichFromMaps({ leadId, refresh = false, force = false })
     const key = geminiKeyStatus();
     const err = new HttpError(409, key.ok === false
       ? 'Google refused GEMINI_API_KEY (' + key.reason + '). Replace it and restart to use Maps lookups.'
-      : 'Google Maps lookup needs LLM_PROVIDER=gemini and a GEMINI_API_KEY with Maps grounding enabled.');
+      : 'Google Maps lookup needs a GEMINI_API_KEY with Maps grounding enabled.');
     err.retryable = false;
     throw err;
   }
@@ -209,16 +209,16 @@ export async function enrichSocialPresence({ leadId, force = false }) {
     const found = await enrichLeadSocial({ tenantId: lead.tenant_id, leadId, force });
     if (instagramAvailable() && !handle && found.handleWritten) {
       const exact = await enrichInstagram({ leadId, force: true });
-      return { via: 'google_search+instagram_api', ...found, instagram: exact.instagram, evaluation: exact.evaluation || found.evaluation };
+      return { via: researchMethod() + '+instagram_api', ...found, instagram: exact.instagram, evaluation: exact.evaluation || found.evaluation };
     }
-    return { via: 'google_search', ...found };
+    return { via: researchMethod(), ...found };
   }
   if (instagramAvailable()) return { via: 'instagram_api', skipped: 'No Instagram handle on this lead yet - add one, or set GEMINI_API_KEY so search can find it.' };
 
   const key = geminiKeyStatus();
   const err = new HttpError(409, key.ok === false
     ? 'Google refused GEMINI_API_KEY (' + key.reason + '), so social search is off. Replace the key and restart - or paste the Instagram line from Google in Details.'
-    : 'Social lookup is off. Set GEMINI_API_KEY for Google search, or META_GRAPH_TOKEN and INSTAGRAM_BUSINESS_ID for Instagram\'s own numbers.');
+    : 'Social lookup is off. Configure OPENAI_API_KEY with LLM_PROVIDER=openai, or GEMINI_API_KEY with LLM_PROVIDER=gemini, or Meta credentials for Instagram\'s own numbers.');
   err.retryable = false;
   throw err;
 }

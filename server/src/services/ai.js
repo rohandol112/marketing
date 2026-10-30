@@ -4,8 +4,7 @@ import {
   handleMatchesName, parseHumanCount, HttpError,
 } from '../lib/util.js';
 import {
-  generatePrecallBrief,
-  generateWhatsappOpener,
+  generateOutreach,
   extractCallNote,
   suggestNextStep,
   researchBusiness,
@@ -13,6 +12,7 @@ import {
 } from '../lib/prompts.js';
 import { renderDeep, templateVars, unresolvedTokens } from '../lib/render.js';
 import { waLink, telLink, mailtoLink, adLibraryLinks, whatsappNumber } from '../lib/wa.js';
+import { llmProfile } from '../lib/llm.js';
 
 /**
  * The AI layer.
@@ -54,6 +54,8 @@ function cacheKey(kind, lead, extra = {}) {
       reviews: lead.review_count,
       lastActivity: extra.lastActivityId || null,
       note: extra.noteHash || null,
+      modelProfile: llmProfile({ fast: kind === 'note_extract' }),
+      researchProfile: extra.bundle ? llmProfile({ research: true }) : null,
       // 3: the prompt now carries the verified urgent issue, Instagram activity
       // and the kind of number on file, so older drafts are stale.
       v: 3,
@@ -68,7 +70,7 @@ async function findCached(tenantId, kind, hash) {
     .first();
 }
 
-async function persist({ tenantId, leadId, kind, stage, hash, result }) {
+async function persist({ tenantId, leadId, kind, stage, hash, result, logCall = true, operation = kind }) {
   const id = uid('ai_');
   await knex('ai_suggestions').insert({
     id,
@@ -85,13 +87,14 @@ async function persist({ tenantId, leadId, kind, stage, hash, result }) {
     fallback: !!result.fallback,
     created_at: now(),
   });
-  if (!result.fallback) {
+  if (!result.fallback && logCall) {
     await logUsage({
       tenantId,
-      provider: 'gemini',
-      operation: kind,
+      provider: result.provider || 'gemini',
+      operation,
       units: 1,
-      meta: { model: result.model, tokensIn: result.tokensIn, tokensOut: result.tokensOut },
+      meta: { model: result.model, tokensIn: result.tokensIn, tokensOut: result.tokensOut,
+        cachedTokens: result.cachedTokens || 0, cacheWriteTokens: result.cacheWriteTokens || 0, webSearchCalls: result.webSearchCalls || 0 },
     });
   }
   return id;
@@ -132,15 +135,17 @@ export async function getResearch({ tenantId, leadId, force = false, maxAgeDays 
 
   const hash = sha1(JSON.stringify({
     kind: 'research', name: lead.name, locality: lead.locality,
-    category: lead.normalized_category, website: lead.website, v: 1,
+    category: lead.normalized_category, website: lead.website, modelProfile: llmProfile({ research: true }), v: 2,
   }));
 
   if (!force) {
     const cached = await findCached(tenantId, 'research', hash);
-    if (cached) {
+    if (cached && !cached.fallback) {
       const ageDays = (Date.now() - new Date(cached.created_at).getTime()) / 86400000;
       if (ageDays < maxAgeDays) {
-        return { ...shape(cached, { cached: true }), sources: cached.output?.__sources || [] };
+        const output = asObject(cached.output);
+        return { ...shape(cached, { cached: true }), provider: llmProfile({ research: true }).provider,
+          sources: output.__sources || [], queries: output.__queries || [], grounded: Boolean(output.__grounded) };
       }
     }
   }
@@ -148,7 +153,7 @@ export async function getResearch({ tenantId, leadId, force = false, maxAgeDays 
   const result = await researchBusiness({ lead });
 
   // Citations travel with the research, so a rep can check any claim it made.
-  const payload = { ...result.data, __sources: result.sources || [], __grounded: result.grounded };
+  const payload = { ...result.data, __sources: result.sources || [], __queries: result.queries || [], __grounded: result.grounded };
   const id = await persist({
     tenantId, leadId, kind: 'research', stage: lead.stage, hash,
     result: { ...result, data: payload },
@@ -162,6 +167,7 @@ export async function getResearch({ tenantId, leadId, force = false, maxAgeDays 
     queries: result.queries || [],
     grounded: result.grounded,
     model: result.model,
+    provider: result.provider,
     latencyMs: result.latencyMs,
     tokensIn: result.tokensIn,
     tokensOut: result.tokensOut,
@@ -317,11 +323,13 @@ export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
     return { skipped: true, filled: 0, reason: 'Social search failed: ' + r.reason, retryable: Boolean(r.retryable) };
   }
   await logUsage({
-    tenantId, provider: 'gemini', operation: 'social_search', units: tries,
+    tenantId, provider: r.provider || 'gemini', operation: 'social_search', units: tries,
     meta: { model: r.model, queries: (r.queries || []).length, sources: (r.sources || []).length },
   });
 
   const at = now();
+  const searchSource = r.provider === 'openai' ? 'openai_web_search' : 'gemini_search_grounding';
+  const searchSources = ['gemini_search_grounding', 'openai_web_search'];
   const d = r.data || {};
   const searched = searchedFor(r);
   const sources = (r.sources || []).filter((s) => s.uri || s.title);
@@ -349,13 +357,13 @@ export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
       // A number an earlier search wrote is refreshed; one a person typed,
       // Instagram's API returned, or nobody recorded the source of is not.
       const src = prov[field] && prov[field].source;
-      if (src !== 'gemini_search_grounding') {
+      if (!searchSources.includes(src)) {
         propose(field, value, 'Search found a different value from the one on file');
         return;
       }
     }
     patch[field] = value;
-    prov[field] = { source: 'gemini_search_grounding', method, by: evidence, confidence: 'medium', verified_at: at };
+    prov[field] = { source: searchSource, method, by: evidence, confidence: 'medium', verified_at: at };
     written.push(field);
   };
 
@@ -369,7 +377,7 @@ export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
   if (foundHandle && !existingHandle) {
     if (searched && namesMatch && !typedByPerson('ig_handle')) {
       patch.ig_handle = foundHandle;
-      prov.ig_handle = { source: 'gemini_search_grounding', method: 'social_search', by: evidence, confidence: 'medium', verified_at: at };
+      prov.ig_handle = { source: searchSource, method: 'social_search', by: evidence, confidence: 'medium', verified_at: at };
       written.push('ig_handle');
       handle = foundHandle;
       handleWritten = true;
@@ -410,7 +418,7 @@ export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
   // The Instagram block drives the "dormant" and "no posts" signals, so it is
   // only built from what was cited - and never over Meta's or a person's own.
   const prevIg = social.instagram || {};
-  const prevIsSearch = !prevIg.found || prevIg.source === 'gemini_search_grounding';
+  const prevIsSearch = !prevIg.found || searchSources.includes(prevIg.source);
   let igAudit = null;
   if (handle && prevIsSearch && searched && (handleWritten || sameAccount)) {
     igAudit = {
@@ -424,7 +432,7 @@ export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
       lastPostAt: igNumbersTrusted && posts === 0 ? null
         : igNumbersTrusted && lastPostAt ? lastPostAt : prevIg.lastPostAt ?? null,
       checkedAt: at,
-      source: 'gemini_search_grounding',
+      source: searchSource,
       cited: igCited,
       evidence,
     };
@@ -436,7 +444,7 @@ export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
   const fbOurs = Boolean(fbUrl && /facebook\.com/i.test(fbUrl) && d.facebook_name && nameSimilarity(d.facebook_name, lead.name) >= 0.8);
   let fbAudit = null;
   if (searched && fbUrl && /facebook\.com/i.test(fbUrl)) {
-    fbAudit = { found: true, url: fbUrl, name: d.facebook_name || null, followers: fbCited && fbOurs ? fbFollowers : null, checkedAt: at, source: 'gemini_search_grounding', cited: fbCited };
+    fbAudit = { found: true, url: fbUrl, name: d.facebook_name || null, followers: fbCited && fbOurs ? fbFollowers : null, checkedAt: at, source: searchSource, cited: fbCited };
     if (fbCited && fbFollowers !== null) {
       if (fbOurs) write('fb_followers', fbFollowers, 'social_search');
       else propose('fb_followers', fbFollowers, 'Facebook page "' + (d.facebook_name || fbUrl) + '" - check it is theirs');
@@ -449,7 +457,7 @@ export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
   const liOurs = Boolean(liSlug && handleMatchesName(liSlug, lead.name));
   let liAudit = null;
   if (searched && liUrl && /linkedin\.com/i.test(liUrl)) {
-    liAudit = { found: true, url: liUrl, followers: liCited && liOurs ? liFollowers : null, checkedAt: at, source: 'gemini_search_grounding', cited: liCited };
+    liAudit = { found: true, url: liUrl, followers: liCited && liOurs ? liFollowers : null, checkedAt: at, source: searchSource, cited: liCited };
     if (liCited && liFollowers !== null) {
       if (liOurs) write('li_followers', liFollowers, 'social_search');
       else propose('li_followers', liFollowers, 'LinkedIn page ' + liUrl + ' - check it is theirs');
@@ -520,7 +528,7 @@ export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
     evaluation,
     reason: searched
       ? (written.length || proposed > 0 ? null : 'Searched, but found nothing new for this business.')
-      : 'Google search did not run for this business, so nothing was written'
+      : 'Web search did not run for this business, so nothing was written'
         + (proposed > 0 ? ' - a suggested handle is below for you to check.' : '. Try again later, or paste the Instagram line from Google in Details.'),
   };
 }
@@ -529,52 +537,47 @@ export async function enrichLeadSocial({ tenantId, leadId, force = false }) {
 /* Pre-call brief                                                     */
 /* ------------------------------------------------------------------ */
 
-export async function getPrecallBrief({ tenantId, leadId, userId, force = false }) {
+const outreachInFlight = new Map();
+
+async function outreachPair({ tenantId, leadId, force = false }) {
   const lead = await knex('leads').where({ id: leadId, tenant_id: tenantId }).first();
   if (!lead) throw new Error('Lead not found');
+  const kinds = ['precall_brief', 'whatsapp_opener'];
+  const hashes = kinds.map(kind => cacheKey(kind, lead, { bundle: true }));
+  const key = JSON.stringify([tenantId, leadId, hashes, force]);
+  if (outreachInFlight.has(key)) return outreachInFlight.get(key);
+  const pending = (async () => {
+    if (!force) {
+      const cached = await Promise.all(kinds.map((kind, i) => findCached(tenantId, kind, hashes[i])));
+      if (cached.every(row => row && !row.fallback)) return { lead,
+        brief: shape(cached[0], { cached: true, provider: llmProfile().provider }),
+        whatsapp: shape(cached[1], { cached: true, provider: llmProfile().provider }) };
+    }
+    const { tenant, catalog, packages } = await tenantContext(tenantId);
+    let research = null;
+    try {
+      const r = await getResearch({ tenantId, leadId });
+      if (!r.fallback && r.grounded) research = r.output;
+    } catch { console.warn('[ai] research unavailable; drafting from existing observations.'); }
+    const result = await generateOutreach({ tenant, catalog, packages, lead, research });
+    const pair = { lead, research };
+    for (const [i, name] of ['brief', 'whatsapp'].entries()) {
+      const part = { ...result, data: result.data[name] };
+      const id = await persist({ tenantId, leadId, kind: kinds[i], stage: lead.stage, hash: hashes[i], result: part,
+        logCall: i === 0, operation: 'outreach_bundle' });
+      pair[name] = { id, kind: kinds[i], output: part.data, model: result.model, provider: result.provider,
+        latencyMs: result.latencyMs, tokensIn: result.tokensIn, tokensOut: result.tokensOut,
+        fallback: result.fallback, reason: result.reason, cached: false, action: null };
+    }
+    return pair;
+  })();
+  outreachInFlight.set(key, pending);
+  try { return await pending; } finally { outreachInFlight.delete(key); }
+}
 
-  const hash = cacheKey('precall_brief', lead);
-  if (!force) {
-    const cached = await findCached(tenantId, 'precall_brief', hash);
-    if (cached) return decorate(shape(cached, { cached: true }), lead, tenantId, userId);
-  }
-
-  const { tenant, catalog, packages } = await tenantContext(tenantId);
-
-  // Research first, brief second. The brief is only as good as what it knows,
-  // and scored observations alone produce advice that fits any business in the
-  // category rather than this one.
-  let research = null;
-  try {
-    const r = await getResearch({ tenantId, leadId });
-    if (!r.fallback) research = r.output;
-  } catch (e) {
-    console.warn('[ai] research step failed, briefing on observations only:', e.message);
-  }
-
-  const result = await generatePrecallBrief({ tenant, catalog, packages, lead, research });
-  const id = await persist({ tenantId, leadId, kind: 'precall_brief', stage: lead.stage, hash, result });
-
-  return decorate(
-    {
-      id,
-      kind: 'precall_brief',
-      output: result.data,
-      model: result.model,
-      provider: result.provider,
-      latencyMs: result.latencyMs,
-      tokensIn: result.tokensIn,
-      tokensOut: result.tokensOut,
-      fallback: result.fallback,
-      reason: result.reason,
-      research,
-      cached: false,
-      action: null,
-    },
-    lead,
-    tenantId,
-    userId
-  );
+export async function getPrecallBrief(args) {
+  const pair = await outreachPair(args);
+  return decorate({ ...pair.brief, research: pair.research }, pair.lead, args.tenantId, args.userId);
 }
 
 /**
@@ -615,39 +618,9 @@ async function decorate(suggestion, lead, tenantId, userId) {
 /* WhatsApp opener                                                    */
 /* ------------------------------------------------------------------ */
 
-export async function getWhatsappOpener({ tenantId, leadId, userId, force = false }) {
-  const lead = await knex('leads').where({ id: leadId, tenant_id: tenantId }).first();
-  if (!lead) throw new Error('Lead not found');
-
-  const hash = cacheKey('whatsapp_opener', lead);
-  if (!force) {
-    const cached = await findCached(tenantId, 'whatsapp_opener', hash);
-    if (cached) return decorateWa(shape(cached, { cached: true }), lead, tenantId, userId);
-  }
-
-  const { tenant, catalog, packages } = await tenantContext(tenantId);
-  const result = await generateWhatsappOpener({ tenant, catalog, packages, lead });
-  const id = await persist({ tenantId, leadId, kind: 'whatsapp_opener', stage: lead.stage, hash, result });
-
-  return decorateWa(
-    {
-      id,
-      kind: 'whatsapp_opener',
-      output: result.data,
-      model: result.model,
-      provider: result.provider,
-      latencyMs: result.latencyMs,
-      tokensIn: result.tokensIn,
-      tokensOut: result.tokensOut,
-      fallback: result.fallback,
-      reason: result.reason,
-      cached: false,
-      action: null,
-    },
-    lead,
-    tenantId,
-    userId
-  );
+export async function getWhatsappOpener(args) {
+  const pair = await outreachPair(args);
+  return decorateWa(pair.whatsapp, pair.lead, args.tenantId, args.userId);
 }
 
 async function decorateWa(suggestion, lead, tenantId, userId) {

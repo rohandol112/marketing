@@ -4,6 +4,7 @@ import { searchCategory, costPerCall } from '../lib/places.js';
 import { discoverCategory } from '../lib/geminiDiscovery.js';
 import { discoverCategory as discoverViaOsm } from '../lib/osm.js';
 import { discoverCategory as discoverViaMaps, mapsLookupAvailable } from '../lib/mapsDiscovery.js';
+import { discoverCombined } from '../lib/dualDiscovery.js';
 import { searchAreas, locateBusiness } from '../lib/geo.js';
 import { auditWebsite, pageSpeedReport } from '../lib/websiteAudit.js';
 import { DEFAULT_SCORING_CONFIG } from '../lib/scoring.js';
@@ -150,10 +151,10 @@ export async function runDiscovery({ runId }) {
   const center = { lat: Number(run.lat), lng: Number(run.lng) };
   const radiusM = Number(run.radius_m);
   const tier = params.fieldTier || config.places.fieldTier;
-  const maxPages = params.maxPages || config.places.maxPages;
+  const source = params.source || discoverySource();
+  const maxPages = params.maxPages || (source === 'combined' ? config.combined.passes : config.places.maxPages);
   const defaultCountry = run.region_code || (await tenantCountry(tenantId));
 
-  const source = params.source || discoverySource();
   const tag = '[discovery] ' + runId;
   const startedAt = Date.now();
 
@@ -190,6 +191,9 @@ export async function runDiscovery({ runId }) {
   let tokensIn = 0;
   let tokensOut = 0;
   let llmModel = null;
+  let combinedCost = 0;
+  let combinedRequests = 0;
+  const discoveryReports = [];
   const auditQueue = [];
   const errors = [];
   const warnings = new Set();
@@ -206,6 +210,19 @@ export async function runDiscovery({ runId }) {
 
   /** One category, from whichever source this sweep uses. */
   async function fetchCategory(categoryId) {
+    if (source === 'combined') {
+      const result = await discoverCombined({ categoryId, areaLabel: run.area_label, center, radiusM,
+        regionCode: run.region_code || undefined, passes: maxPages,
+        onAttempt: () => {
+          if (combinedRequests >= (params.requestLimit || 100)) throw new Error('request_limit');
+          combinedRequests++;
+        } });
+      tokensIn += result.tokensIn; tokensOut += result.tokensOut;
+      combinedCost += result.costUsd; llmModel = result.model;
+      discoveryReports.push({ categoryId, ...result.report });
+      for (const w of result.warnings) warnings.add(w);
+      return result;
+    }
     if (source === 'maps') {
       const result = await discoverViaMaps({
         categoryId,
@@ -365,13 +382,23 @@ export async function runDiscovery({ runId }) {
 
       row.field_provenance = JSON.stringify(
         recordProvenance(raw.source_url || {}, knownFields, {
-          source: provenanceSource,
+          source: source === 'combined' ? raw.source_url?.provider : provenanceSource,
           method: source === 'gemini' ? 'model_recall'
           : source === 'maps' ? 'maps_grounded_lookup'
+          : source === 'combined' ? 'cited_discovery'
           : source === 'osm' ? 'community_survey' : 'api',
           confidence: raw.source_url?.confidence || null,
         })
       );
+      if (source === 'combined') {
+        const provenance = JSON.parse(row.field_provenance);
+        for (const field of knownFields) {
+          const origin = raw.source_url?.fieldSources?.[field];
+          if (origin) provenance[field] = { ...provenance[field], source: origin.provider,
+            model: origin.model, urls: origin.urls || [], method: 'cited_discovery' };
+        }
+        row.field_provenance = JSON.stringify(provenance);
+      }
       row.source_url = JSON.stringify(row.source_url || {});
       if (row.website_audit) row.website_audit = JSON.stringify(row.website_audit);
 
@@ -403,7 +430,7 @@ export async function runDiscovery({ runId }) {
 
   const secs = (t) => ((Date.now() - t) / 1000).toFixed(1) + 's';
   const who = source === 'places' ? 'Places API' : source === 'osm' ? 'OpenStreetMap'
-    : source === 'maps' ? 'Google Maps grounding' : 'Gemini';
+    : source === 'maps' ? 'Google Maps grounding' : source === 'combined' ? 'Luna + Gemini' : 'Gemini';
   const fatalMessage = (e) => {
     const detail = String(e.message || '').replace(/^Maps grounding /, '');
     if (e.keyRefused) return 'Google refused GEMINI_API_KEY - ' + detail + '. Put a working key in GEMINI_API_KEY and restart the server.';
@@ -475,6 +502,10 @@ export async function runDiscovery({ runId }) {
 
   async function worker() {
     while (!stop && !cancelled && next < total) {
+      if (source === 'combined' && combinedRequests >= (params.requestLimit || 100)) {
+        stop = { error: 'Request limit reached. Completed results are kept; narrow the area or increase the request limit for another run.' };
+        break;
+      }
       // Claim the category before awaiting anything: two workers that both
       // passed the check above must not both take the last one.
       const categoryId = categories[next++];
@@ -496,7 +527,10 @@ export async function runDiscovery({ runId }) {
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
   await writes;
 
-  const costUsd = source === 'places' ? apiCalls * costPerCall(tier) : 0;
+  const costUsd = source === 'places' ? apiCalls * costPerCall(tier) : source === 'combined' ? combinedCost : 0;
+  if (source === 'combined' && discoveryReports.length && discoveryReports.every(r => r.unique === 0 && r.partial)) {
+    stop ||= { error: 'Both discovery providers failed to produce supported candidates. Check the run warnings.' };
+  }
   if (apiCalls > 0) {
     await logUsage({
       tenantId,
@@ -509,6 +543,7 @@ export async function runDiscovery({ runId }) {
         model: llmModel || undefined,
         tokensIn: tokensIn || undefined,
         tokensOut: tokensOut || undefined,
+        discoveryReports: source === 'combined' ? discoveryReports : undefined,
       },
     });
   }
@@ -567,6 +602,8 @@ export async function runDiscovery({ runId }) {
       ...params, source, grounded, warnings: [...warnings],
       excluded, suppressed, reclassifiedAway, enrichQueued,
       durationMs: Date.now() - startedAt,
+      ...(source === 'combined' ? { discoveryReports, requestLimit: params.requestLimit || 100,
+        attemptedRequests: combinedRequests, costEstimateIncomplete: true } : {}),
     }),
     finished_at: now(),
   };

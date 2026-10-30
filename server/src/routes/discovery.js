@@ -7,6 +7,7 @@ import { estimateSweep } from '../lib/places.js';
 import { enqueue } from '../lib/queue.js';
 import { PRESETS, CATEGORY_BY_ID } from '../lib/categories.js';
 import { ensureGeminiKey } from '../lib/llm.js';
+import { combinedAvailable } from '../lib/dualDiscovery.js';
 
 const app = new Hono();
 
@@ -77,9 +78,16 @@ app.post('/runs', async (c) => {
 
   const categories = resolveCategories(b);
   const radiusM = Math.min(Math.max(Number(b.radiusM || 5000), 200), 50000);
-  const maxPages = Math.min(Math.max(Number(b.maxPages || config.places.maxPages), 1), 3);
-
   const source = b.source || discoverySource();
+  const maxPages = Math.min(Math.max(Number(b.maxPages ?? (source === 'combined' ? config.combined.passes : config.places.maxPages)), 1), 3);
+  if (!['combined', 'maps', 'gemini', 'places', 'osm', 'mock'].includes(source)) throw new HttpError(400, 'Unknown discovery source');
+  if (source === 'combined' && !combinedAvailable()) throw new HttpError(409, 'Combined discovery needs OPENAI_API_KEY and GEMINI_API_KEY.');
+  const requestLimit = Number(b.requestLimit ?? 100);
+  if (source === 'combined' && (!Number.isInteger(requestLimit) || requestLimit < 2 || requestLimit > 1000)) {
+    throw new HttpError(400, 'Request limit must be an integer between 2 and 1000.');
+  }
+  if (!Number.isFinite(radiusM) || !Number.isFinite(maxPages) || !Number.isFinite(Number(b.lat)) || !Number.isFinite(Number(b.lng))
+    || Math.abs(Number(b.lat)) > 90 || Math.abs(Number(b.lng)) > 180) throw new HttpError(400, 'Invalid location or search limits');
 
   // A sweep that can only fail is refused with the reason, not queued to run
   // its course and come back empty.
@@ -128,6 +136,7 @@ app.post('/runs', async (c) => {
     params: JSON.stringify({
       maxPages,
       source,
+      ...(source === 'combined' ? { requestLimit } : {}),
       fieldTier: b.fieldTier || config.places.fieldTier,
       minReviews: b.minReviews ?? 0,
       auditThreshold: b.auditThreshold,

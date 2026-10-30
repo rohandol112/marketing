@@ -18,15 +18,21 @@ export default function Discovery() {
   const [radiusKm, setRadiusKm] = useState(5);
   const [selected, setSelected] = useState(new Set(app.presets.balanced.ids));
   const [minReviews, setMinReviews] = useState(0);
-  const [maxPages, setMaxPages] = useState(app.modes.maxPages || 3);
+  const [requestLimit, setRequestLimit] = useState(100);
   // The configured source, unless the server says it cannot run - then the
   // best one that can, so the first click is not a sweep that fails.
-  const [source, setSource] = useState(() => {
+  const [source, setSourceState] = useState(() => {
     const all = app.discoverySources || [];
     const configured = all.find((s) => s.id === app.modes.discoverySource);
     if (!configured || configured.available) return app.modes.discoverySource;
     return (all.find((s) => s.available && s.recommended) || all.find((s) => s.available) || configured).id;
   });
+  const [maxPages, setMaxPages] = useState(source === 'combined' ? app.modes.combinedPasses || 1 : app.modes.maxPages || 3);
+  const setSource = id => {
+    if (id === source) return;
+    setSourceState(id);
+    setMaxPages(id === 'combined' ? app.modes.combinedPasses || 1 : app.modes.maxPages || 3);
+  };
   // Directory sources carry no review count - the whole demand score - so each
   // new lead can be looked up on Google Maps after the sweep.
   const [enrichMaps, setEnrichMaps] = useState(app.modes.mapsEnrichOnDiscovery !== false);
@@ -139,6 +145,7 @@ export default function Discovery() {
         minReviews: Number(minReviews) || 0,
         maxPages,
         source,
+        ...(source === 'combined' ? { requestLimit: Number(requestLimit) } : {}),
         enrichMaps: canEnrich ? enrichMaps : false,
       });
       setActiveRun(run);
@@ -336,14 +343,17 @@ export default function Discovery() {
                   <input type="number" min="0" value={minReviews} onChange={(e) => setMinReviews(e.target.value)} />
                 </div>
                 <div className="field">
-                  <label title="20 results per page, 3 is the API ceiling">Pages per category</label>
+                  <label>{source === 'combined' || source === 'maps' ? 'Search batches per category' : 'Pages per category'}</label>
                   <select value={maxPages} onChange={(e) => setMaxPages(Number(e.target.value))}>
-                    <option value={1}>1 (20 results)</option>
-                    <option value={2}>2 (40 results)</option>
-                    <option value={3}>3 (60 results, the API max)</option>
+                    {[1, 2, 3].map(n => <option key={n} value={n}>{source === 'combined' ? n + ' per provider (' + n * 2 + ' discovery passes total)' : source === 'maps' ? n + ' search batch' + (n > 1 ? 'es' : '') : n + ' (' + n * 20 + ' results maximum)'}</option>)}
                   </select>
                 </div>
               </div>
+              {source === 'combined' && <div className="field">
+                <label htmlFor="request-limit">Maximum provider requests (including retries)</label>
+                <input id="request-limit" type="number" min="2" max="1000" value={requestLimit} onChange={e => setRequestLimit(e.target.value)} />
+                <div className="small muted">Both providers search each category. Results per batch vary; this limit bounds requests, not the final invoice.</div>
+              </div>}
             </>
           )}
         </div>
@@ -405,20 +415,20 @@ export default function Discovery() {
           </div>
           <div>
             <div className="stat-label">API calls</div>
-            <div className="stat-value">{estimate?.calls ?? 0}</div>
+            <div className="stat-value">{source === 'combined' ? '≤ ' + requestLimit : estimate?.calls ?? 0}</div>
           </div>
           <div>
             <div className="stat-label">Up to</div>
-            <div className="stat-value">{estimate?.maxResults ?? 0}</div>
+            <div className="stat-value">{source === 'combined' ? 'Variable' : estimate?.maxResults ?? 0}</div>
             <div className="stat-note">businesses before dedupe</div>
           </div>
           <div>
             <div className="stat-label">Estimated cost</div>
             <div className="stat-value">
-              {source === 'places' ? '$' + (estimate?.costUsd ?? 0).toFixed(2) : source === 'gemini' || source === 'maps' ? 'Tokens' : 'Free'}
+              {source === 'combined' ? 'Per run' : source === 'places' ? '$' + (estimate?.costUsd ?? 0).toFixed(2) : source === 'gemini' || source === 'maps' ? 'Tokens' : 'Free'}
             </div>
             <div className="stat-note">
-              {source === 'places' ? estimate?.tier + ' tier'
+              {source === 'combined' ? 'Tokens + search tools; report after completion' : source === 'places' ? estimate?.tier + ' tier'
                 : source === 'gemini' ? 'about 650 tokens per category'
                 : source === 'maps' ? maxPages + ' grounded lookups per category'
                 : canEnrich && enrichMaps ? 'sweep free; one Maps lookup per new lead'
@@ -465,7 +475,7 @@ export default function Discovery() {
                 <span className="badge blue">{activeRun.params.enrichQueued} Maps lookups queued</span>
               )}
               {Number(activeRun.cost_usd) > 0 && (
-                <span className="badge">${Number(activeRun.cost_usd).toFixed(2)} spent</span>
+                <span className="badge">${Number(activeRun.cost_usd).toFixed(2)} {activeRun.params?.costEstimateIncomplete ? 'known estimate' : 'spent'}</span>
               )}
               {(activeRun.tokens_in || activeRun.tokens_out) && (
                 <span className="badge">
@@ -479,6 +489,22 @@ export default function Discovery() {
           </>
         )}
       </div>
+
+      {activeRun?.params?.discoveryReports?.length > 0 && <div className="card" style={{ marginTop: 14 }}>
+        <h2>Discovery comparison</h2>
+        <p className="small muted">Candidate counts show discovery yield, not verified buyers. Shared candidates are counted once after merging. Existing leads and exclusions are checked separately.</p>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Category</th><th>Provider</th><th>Candidates</th><th>With phone</th><th>Requests</th><th>Known estimate</th></tr></thead>
+          <tbody>{activeRun.params.discoveryReports.flatMap(r => Object.entries(r.providers).map(([provider, p]) =>
+            <tr key={r.categoryId + provider}><td>{r.categoryId.replace(/_/g, ' ')}</td><td>{provider}</td><td>{p.candidates}</td><td>{p.withPhone}</td><td>{p.calls}</td><td>${p.estimatedCostUsd.toFixed(4)}</td></tr>
+          ))}</tbody>
+        </table></div>
+        <p className="small">{activeRun.params.discoveryReports.reduce((n,r) => n + r.overlap, 0)} shared candidates across providers. {activeRun.params.attemptedRequests} of {activeRun.params.requestLimit} provider requests used.</p>
+        <p className="small">Found only by Luna: {activeRun.params.discoveryReports.reduce((n,r) => n + (r.lunaOnly || 0), 0)}. Found only by Gemini: {activeRun.params.discoveryReports.reduce((n,r) => n + (r.geminiOnly || 0), 0)}. Counts are per category; existing records are deduplicated at ingestion.</p>
+        <p className="small muted">{activeRun.params.discoveryReports[0].costNote}</p>
+        {[...new Set(activeRun.params.warnings || [])].map(w => <div key={w} className="callout" style={{ marginTop: 6 }}>{w}</div>)}
+        {activeRun.status === 'failed' && activeRun.error && <div className="callout bad">{activeRun.error}</div>}
+      </div>}
 
       {/* ---------------- history ---------------- */}
       {runs.length > 0 && (
@@ -529,7 +555,7 @@ export default function Discovery() {
                       )}
                     </td>
                     <td className="right">
-                      {Number(r.cost_usd) > 0 ? '$' + Number(r.cost_usd).toFixed(2) : <span className="faint">free</span>}
+                      {Number(r.cost_usd) > 0 ? '$' + Number(r.cost_usd).toFixed(2) + (r.params?.costEstimateIncomplete ? ' est.' : '') : <span className="faint">{r.source === 'combined' ? 'Unpriced' : 'free'}</span>}
                     </td>
                     <td className="small faint">{new Date(r.created_at).toLocaleString()}</td>
                   </tr>

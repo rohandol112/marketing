@@ -1,5 +1,5 @@
 import config from '../config.js';
-import { activeProvider, modelsFor, parseLooseJson } from './llm.js';
+import { geminiModel, parseLooseJson } from './llm.js';
 import { CATEGORY_BY_ID } from './categories.js';
 import { normalizeHost, normalizeName } from './util.js';
 
@@ -153,7 +153,7 @@ export async function discoverCategory({ categoryId, areaLabel, center, radiusM,
     'Remember: no phone numbers, no street numbers, no invented websites. Mark anything you are reconstructing as low confidence.',
   ].join('\n');
 
-  const discoveryModel = modelsFor(activeProvider()).main;
+  const discoveryModel = geminiModel();
   const warnings = [];
   let result = null;
   let grounded = false;

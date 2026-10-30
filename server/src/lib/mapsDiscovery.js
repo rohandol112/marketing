@@ -1,6 +1,6 @@
 import config from '../config.js';
 import {
-  activeProvider, modelsFor, parseLooseJson, RateLimiter, geminiUsable, isKeyRefusal, googleErrorSummary, noteGeminiKey,
+  geminiModel, parseLooseJson, RateLimiter, geminiUsable, isKeyRefusal, googleErrorSummary, noteGeminiKey,
 } from './llm.js';
 import { CATEGORY_BY_ID } from './categories.js';
 import { normalizeHost, normalizeUrl, normalizeName, firstPhone, nameSimilarity, addressKey, sleep } from './util.js';
@@ -103,10 +103,12 @@ export function thinkingFor(model, level = config.maps.thinkingLevel, explicit =
  * category would fail the same way - a refused key, a model that does not
  * exist, the day's quota gone - so the sweep stops and says why.
  */
-export function mapsError(status, text) {
+export function mapsError(status, text, retryAfter) {
   const summary = googleErrorSummary(status, text);
   const err = new Error('Maps grounding ' + summary);
   err.status = status;
+  const seconds = Number(retryAfter);
+  err.retryAfterMs = retryAfter ? (Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(retryAfter) - Date.now()) || 0) : 0;
   err.keyRefused = isKeyRefusal(status, text);
   err.dailyQuota = status === 429 && /PerDay/i.test(text);
   err.retryable = !err.dailyQuota && (status === 429 || status >= 500);
@@ -115,24 +117,24 @@ export function mapsError(status, text) {
   return err;
 }
 
-export async function callMaps({ model, system = SYSTEM, user, timeoutMs = 90000, fetchImpl = fetch }) {
+export async function callMaps({ model, system = SYSTEM, user, timeoutMs = 90000, fetchImpl = fetch, thinkingLevel, onRequest, groundingTool = 'google_maps' }) {
   const generationConfig = { temperature: 0.1 };
-  const thinking = thinkingFor(model);
+  const thinking = thinkingLevel ? thinkingFor(model, thinkingLevel, true) : thinkingFor(model);
   if (thinking) generationConfig.thinkingConfig = thinking;
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: [{ text: user }] }],
     // Maps grounding cannot be combined with google_search - that pairing is
     // a 400 on this model, whatever the docs imply.
-    tools: [{ google_maps: {} }],
+    tools: groundingTool ? [{ [groundingTool]: {} }] : undefined,
     generationConfig,
   };
-  const post = () => fetchImpl(config.gemini.baseUrl + '/v1beta/models/' + model + ':generateContent', {
+  const post = () => { onRequest?.(); return fetchImpl(config.gemini.baseUrl + '/v1beta/models/' + model + ':generateContent', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.gemini.apiKey },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
-  });
+  }); };
 
   let res = await post();
   if (!res.ok) {
@@ -144,16 +146,17 @@ export async function callMaps({ model, system = SYSTEM, user, timeoutMs = 90000
       console.warn('[maps] ' + model + ' does not accept ' + JSON.stringify(thinking) + ' - using its default thinking');
       delete generationConfig.thinkingConfig;
       res = await post();
-      if (!res.ok) throw mapsError(res.status, await res.text().catch(() => ''));
+      if (!res.ok) throw mapsError(res.status, await res.text().catch(() => ''), res.headers?.get('retry-after'));
     } else {
-      throw mapsError(res.status, text);
+      throw mapsError(res.status, text, res.headers?.get('retry-after'));
     }
   }
   noteGeminiKey(true);
 
   const json = await res.json();
   const cand = json.candidates?.[0];
-  const parsed = parseLooseJson(cand?.content?.parts?.map((p) => p.text).join('') || '');
+  const text = cand?.content?.parts?.map((p) => p.text || '').join('') || '';
+  const parsed = parseLooseJson(text);
   const gm = cand?.groundingMetadata || {};
   const chunks = (gm.groundingChunks || [])
     .map((c) => c.maps)
@@ -161,10 +164,13 @@ export async function callMaps({ model, system = SYSTEM, user, timeoutMs = 90000
     .map((m) => ({ placeId: m.placeId ? String(m.placeId).replace(/^places\//, '') : null, title: m.title || null, uri: m.uri || null }));
 
   return {
+    text,
     parsed,
     businesses: Array.isArray(parsed) ? parsed : parsed?.businesses || [],
     chunks,
     chunkCount: (gm.groundingChunks || []).length,
+    webChunks: (gm.groundingChunks || []).map(c => c.web).filter(Boolean),
+    searchQueries: Array.isArray(gm.webSearchQueries) ? gm.webSearchQueries.length : null,
     tokensIn: json.usageMetadata?.promptTokenCount ?? null,
     tokensOut: json.usageMetadata?.candidatesTokenCount ?? null,
     thoughtTokens: json.usageMetadata?.thoughtsTokenCount ?? null,
@@ -310,7 +316,7 @@ export async function discoverCategory({
   const cat = CATEGORY_BY_ID.get(categoryId);
   if (!cat) throw new Error('Unknown category: ' + categoryId);
 
-  const model = modelsFor(activeProvider()).main;
+  const model = geminiModel();
   const radiusKm = Math.round((radiusM / 1000) * 10) / 10;
   const label = cat.label.toLowerCase();
   const angles = ANGLES.slice(0, Math.min(ANGLES.length, Math.max(1, passes))).map((f) => f(label));
@@ -444,7 +450,7 @@ export async function discoverCategory({
  *   none    - not found, or not the same business. Nothing is written.
  */
 export async function lookupBusiness(lead, { fetchImpl = fetch } = {}) {
-  const model = modelsFor(activeProvider()).main;
+  const model = geminiModel();
   const where = [lead.address, lead.locality, lead.region].filter(Boolean).join(', ');
   const user = [
     'Look up this business on Google Maps:',

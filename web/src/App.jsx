@@ -98,6 +98,8 @@ function Shell() {
   // Label the source that is actually being used. Reading placesMock here was
   // wrong: it made real OpenStreetMap and Gemini runs read as "Mock leads".
   const SOURCE_BADGE = {
+    combined: { text: 'Luna + Gemini', cls: 'blue', why: 'Combined discovery with source evidence and duplicate checks.' },
+    maps: { text: 'Google Maps', cls: 'a', why: 'Gemini Maps grounding.' },
     places: { text: 'Google Places', cls: 'a', why: 'Authoritative discovery with ratings and review counts.' },
     osm:    { text: 'OpenStreetMap', cls: 'blue', why: 'Real mapped businesses, free. No ratings, so leads need a review count before they qualify.' },
     gemini: { text: 'AI recall - unverified', cls: 'b', why: 'The model is listing businesses from memory. Every lead needs a human check before a rep sees it.' },

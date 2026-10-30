@@ -967,6 +967,7 @@ function AuditCard({ lead, onChanged }) {
 /** Where each social number came from - a search result is not Instagram's own word. */
 const SOCIAL_SOURCE = {
   gemini_search_grounding: 'a Google search result - check before quoting it',
+  openai_web_search: 'a web search result - check before quoting it',
   human: 'checked by a person',
 };
 

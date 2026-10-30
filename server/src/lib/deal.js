@@ -63,7 +63,7 @@ export function urgentIssue(lead) {
       // A date read off a search result can be a pinned post or an old
       // snippet; the rep looks before saying it to the owner.
       return 'Their Instagram has been silent for ' + quiet + ' days'
-        + (ig.source === 'gemini_search_grounding' ? UNCONFIRMED : '');
+        + (['gemini_search_grounding', 'openai_web_search'].includes(ig.source) ? UNCONFIRMED : '');
     }
   }
   return null;

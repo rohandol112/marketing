@@ -3,12 +3,13 @@ import knex from '../db/knex.js';
 import config, { discoverySource } from '../config.js';
 import { CATEGORIES, PRESETS, GROUPS } from '../lib/categories.js';
 import { STAGES, STAGE_META, LOSS_REASONS } from '../services/leads.js';
-import { llmStatus, geminiKeyStatus, geminiSearchAvailable, modelsFor, activeProvider } from '../lib/llm.js';
+import { llmStatus, geminiKeyStatus, geminiSearchAvailable, geminiModel, researchMethod } from '../lib/llm.js';
 import { queueStats, queueDepth } from '../lib/queue.js';
 import { estimateSweep } from '../lib/places.js';
 import { mapsLookupAvailable, thinkingFor } from '../lib/mapsDiscovery.js';
 import { instagramAvailable } from '../lib/instagram.js';
 import { EXCLUSION_LABELS } from '../lib/classify.js';
+import { combinedAvailable } from '../lib/dualDiscovery.js';
 
 const app = new Hono();
 
@@ -30,7 +31,7 @@ app.get('/bootstrap', async (c) => {
   const key = geminiKeyStatus();
   const geminiProblem = !config.gemini.apiKey ? 'No GEMINI_API_KEY set'
     : key.ok === false ? 'Google refused the key: ' + key.reason : null;
-  const socialMethod = instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? 'gemini_search_grounding' : 'none';
+  const socialMethod = instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? researchMethod() : 'none';
 
   return c.json({
     tenant,
@@ -48,6 +49,12 @@ app.get('/bootstrap', async (c) => {
     // What the operator can actually pick, with the trade-off stated. Whether a
     // source is usable is a server fact, not something the UI should guess.
     discoverySources: [
+      {
+        id: 'combined', label: 'Luna + Gemini', available: combinedAvailable(), recommended: false,
+        unavailableReason: combinedAvailable() ? null : 'Set OPENAI_API_KEY and GEMINI_API_KEY',
+        note: 'Both providers discover businesses in each category. Supported results are merged before the existing review process.',
+        caveat: 'Search coverage and contact details vary. Partial failures keep successful results. Run reports show each provider’s contribution and estimated costs.',
+      },
       {
         id: 'maps',
         label: 'Google Maps (via Gemini)',
@@ -93,6 +100,7 @@ app.get('/bootstrap', async (c) => {
       pagespeedEnabled: config.pagespeed.enabled,
       fieldTier: config.places.fieldTier,
       maxPages: config.places.maxPages,
+      combinedPasses: config.combined.passes,
       mapsLookup: mapsLookupAvailable(),
       instagramLookup: instagramAvailable(),
       socialLookup: socialMethod !== 'none',
@@ -129,14 +137,14 @@ app.get('/health', async (c) => {
     mapsLookup: {
       configured: mapsLookupAvailable(),
       // What the configured model is actually sent, not just the setting.
-      thinkingLevel: thinkingFor(modelsFor(activeProvider()).main)?.thinkingLevel || 'model default',
+      thinkingLevel: thinkingFor(geminiModel())?.thinkingLevel || 'model default',
       concurrency: config.maps.concurrency,
       categoryConcurrency: config.maps.categoryConcurrency,
     },
     instagram: { configured: instagramAvailable(), apiVersion: config.instagram.version },
     socialLookup: {
       configured: instagramAvailable() || geminiSearchAvailable(),
-      method: instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? 'gemini_search_grounding' : 'none',
+      method: instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? researchMethod() : 'none',
     },
     maintenance: { auto: config.maintenance.auto, intervalHours: config.maintenance.intervalHours },
     queue: { ...queueStats(), depth: await queueDepth() },
