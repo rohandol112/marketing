@@ -26,7 +26,7 @@ DISCOVERY_GEMINI_MODELS=gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemin
 DISCOVERY_GEMINI_THINKING=medium
 DISCOVERY_GEMINI_TOOL=search
 DISCOVERY_MAPS_MCP=true
-DISCOVERY_RESULTS_PER_PASS=15
+DISCOVERY_RESULTS_PER_PASS=25
 DISCOVERY_MAX_OUTPUT_TOKENS=16000
 DISCOVERY_RETRIES=2
 ```
@@ -57,6 +57,7 @@ Optional ceilings are `LLM_MAX_OUTPUT_TOKENS=8192` for routine generation and `L
 ## Reliability and limits
 
 - Combined discovery defaults to one pass per provider per category: one Luna discovery request and one Gemini discovery pass. Set `DISCOVERY_COMBINED_PASSES=1` for this default; the Discovery dropdown can explicitly select more. The server uses the same default when a request omits `maxPages`. Other discovery sources retain `PLACES_MAX_PAGES`. Existing saved runs retain their explicit pass count. Extraction, tool actions and failure retries can add requests beyond those two discovery passes.
+- Each pass asks for up to 25 candidates by default (`DISCOVERY_RESULTS_PER_PASS=25`), so the default pair targets up to 50 before overlap, evidence checks and existing-record deduplication. This is a prompt target, not guaranteed unique contacts. Providers may return fewer; raising the target can increase tokens and tool activity without increasing the number of discovery passes.
 
 - Luna retains its bounded exponential retries and jitter (`DISCOVERY_RETRIES`, default two). Gemini tries each eligible model once on transient failure before moving to the next. A successful, valid empty list stops the chain; missing citations, unsupported candidates or invalid extraction advance to another model. There is no memory-only fallback.
 - If the Gemini chain produces no supported response, it waits briefly (at least one second, with jitter) and retries the transiently failed models once, in the same strongest-to-weakest order. Success ends the second pass; there is no third pass. `DISCOVERY_RETRIES=0` disables this delayed retry cascade. `Retry-After` is honored per model; delays over 60 seconds exclude that model from the immediate second pass. A successful research response may still require a separate extraction request.
