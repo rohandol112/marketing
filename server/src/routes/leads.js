@@ -14,7 +14,7 @@ import { waLink, telLink, adLibraryLinks, whatsappNumber } from '../lib/wa.js';
 import { gapsFrom } from '../lib/scoring.js';
 import { recommendPackage, urgentIssue } from '../lib/deal.js';
 import { EXCLUSION_LABELS } from '../lib/classify.js';
-import { CATEGORIES, APP_PITCH_IDS } from '../lib/categories.js';
+import { CATEGORIES, APP_PITCH_IDS, appGapOf } from '../lib/categories.js';
 import { recordProvenance, DISCOVERY_META } from '../services/lifecycle.js';
 
 const app = new Hono();
@@ -219,7 +219,7 @@ function appView(lead, sales) {
     checks: audit.checks || null,
     line: appPitchLine(lead),
     package: lead.app_status === 'no_app' && sales
-      ? recommendPackage(lead, sales.packages, sales.catalog, { only: ['no_app'] })
+      ? recommendPackage(lead, sales.packages, sales.catalog, { only: [appGapOf(lead.normalized_category)] })
       : null,
   };
 }

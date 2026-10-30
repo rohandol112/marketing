@@ -177,3 +177,10 @@ test('categories with precise tags are left alone', () => {
   assert.equal(refineCategory('private_hospital', { name: 'Ruby Hall Clinic', tags: { amenity: 'hospital' } }), 'private_hospital');
   assert.deepEqual(tagListToObject(['healthcare=clinic', 'amenity=clinic']), { healthcare: 'clinic', amenity: 'clinic' });
 });
+
+test('media groups are chains within media only', () => {
+  assert.equal(chainMatch('Lokmat Pune Bureau', 'media_house'), 'lokmat');
+  assert.equal(chainMatch('ABP Majha Pune Office', 'news_agency'), 'abp majha');
+  assert.equal(chainMatch('Kothrud Today News', 'news_agency'), null);
+  assert.equal(chainMatch('Sakal Coaching Classes', 'coaching_institute'), null);
+});

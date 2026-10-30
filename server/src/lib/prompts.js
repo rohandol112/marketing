@@ -326,25 +326,25 @@ const APP_SHAPE = {
     title: 'the app name exactly as the listing shows it',
     developer: 'the developer name as listed',
     url: 'the play.google.com/store/apps/details?id=... or apps.apple.com URL you saw, copied exactly',
-    kind: 'own (published as this institute) or platform (a school ERP or white-label platform app its students or parents use)',
-    why: 'what ties it to this institute: same city or branch, linked from their website, their name in the listing',
+    kind: 'own (published as this organisation) or platform (a school ERP or white-label platform app its students, parents or readers use)',
+    why: 'what ties it to this organisation: same city or branch, linked from their website, their name in the listing',
   }],
   same_name_elsewhere: [{
     store: 'google_play or app_store', title: 'app name', developer: 'developer name', url: 'store URL you saw',
-    why_unsure: 'why it may be a different institute',
+    why_unsure: 'why it may be a different organisation',
   }],
   notes: 'one line, or null',
 };
 
 const APP_SYSTEM = [
-  'You check, with web search, whether one school, college, coaching class or preschool has a mobile app of its own.',
+  'You check, with web search, whether one school, coaching class, preschool, news channel, newspaper or news portal has a mobile app of its own.',
   '',
   'Rules:',
-  '1. Search first, every time. Which small institutes have apps is not in your memory - an answer you did not search for is a guess.',
+  '1. Search first, every time. Which small organisations have apps is not in your memory - an answer you did not search for is a guess.',
   '2. Only report an app you saw on a Google Play or App Store page, or on an app directory page that names its Play package (AppBrain, APKCombo, APKPure). Copy the store URL exactly. Never build a URL or a package id yourself.',
-  '3. An app belongs to this institute only if it is clearly the same one: the same name AND the same city or locality, or linked from their website, or its listing names their branch or address. A same-name app you cannot tie to them goes in same_name_elsewhere.',
-  '4. White-label apps built on Classplus, Teachmint, Graphy, Appx and similar platforms count as theirs - they are published under the institute\'s name. So does a school ERP app the school tells parents to use.',
-  '5. WhatsApp, Zoom, Google Classroom, Google Meet, DigiLocker and payment apps are not their app.',
+  '3. An app belongs to this organisation only if it is clearly the same one: the same name AND the same city or locality, or linked from their website, or its listing names their branch or address. A same-name app you cannot tie to them goes in same_name_elsewhere.',
+  '4. White-label apps built on Classplus, Teachmint, Graphy, Appx and similar platforms count as theirs - they are published under the institute\'s name. So does a school ERP app the school tells parents to use, and a news app a vendor publishes under the channel\'s name.',
+  '5. WhatsApp, Zoom, Google Classroom, Google Meet, DigiLocker and payment apps are not their app. Nor are news aggregators that carry their stories (Dailyhunt, Google News, Inshorts, JioNews) or their YouTube channel.',
   '6. Empty lists are a valid and useful answer. Never return a phone number or an email address.',
 ].join('\n');
 
@@ -359,9 +359,9 @@ export async function appSearch({ lead }) {
   const where = [lead.locality, lead.region, lead.country_code].filter(Boolean).join(', ');
   const q = '"' + lead.name + '"';
   const user = [
-    'Find this institute\'s mobile app, if it has one:',
+    'Find this organisation\'s own mobile app, if it has one:',
     'Name: ' + lead.name,
-    'Type: ' + (lead.category || 'educational institute'),
+    'Type: ' + (lead.category || 'local business'),
     'Location: ' + (where || lead.address || 'unknown'),
     lead.address ? 'Address: ' + lead.address : '',
     lead.website ? 'Their website: ' + lead.website : '',
@@ -371,7 +371,7 @@ export async function appSearch({ lead }) {
     '2. ' + q + (city ? ' ' + city : '') + ' app',
     '3. ' + q + ' site:apps.apple.com',
     '',
-    'List every app that belongs to this institute. List same-name apps you could not tie to them separately.',
+    'List every app that belongs to them. List same-name apps you could not tie to them separately.',
   ].filter(Boolean).join('\n');
 
   return generateGrounded({

@@ -3,9 +3,10 @@ import { normalizeName, normalizeHost } from './util.js';
 /**
  * Does this business publish a mobile app of its own?
  *
- * Asked of schools, colleges, coaching classes and preschools, where "no app"
- * is the pitch: students and parents get notes, fees, results and circulars
- * over WhatsApp groups. Telling an owner "you have no app" when they have one
+ * Asked of schools, colleges, coaching classes, preschools and news houses,
+ * where "no app" is the pitch: students and parents get notes, fees, results
+ * and circulars over WhatsApp groups; readers get a channel's news through
+ * someone else's app. Telling an owner "you have no app" when they have one
  * ends the call, so no_app is the hardest status to earn:
  *
  *   has_app      an app that is theirs: linked from their own site, tied to
@@ -45,12 +46,13 @@ const STORE_BADGE = /(google[-_ ]?play[-_ ]?badge|get[-_ ]?it[-_ ]?on[-_ ]?googl
 const APP_MENTION = /\b(download (our|the) (mobile )?app|get (it|our app|the app) on (google play|the play store|the app store)|available on (the )?(google play|play store|app store)|download on the app store|our (mobile )?app is (now )?(available|live)|install (our|the) app)\b/i;
 
 /**
- * Apps a school or coaching site links that are not theirs: messaging,
- * meetings, payments, government services, generic classroom tools. A school
- * that tells parents to install Google Classroom still has no app of its own.
+ * Apps a school, coaching or news site links that are not theirs: messaging,
+ * meetings, payments, government services, generic classroom tools, news
+ * aggregators (Dailyhunt is com.eterno, Inshorts com.nis.app). A school that
+ * tells parents to install Google Classroom still has no app of its own.
  */
-const THIRD_PARTY_PACKAGE = /^(com\.(whatsapp|google|android|facebook|instagram|microsoft|skype|linkedin|twitter|snapchat|truecaller|phonepe|amazon|flipkart|cisco|dreamplug|mobikwik_new|freecharge|duolingo|sbi|axis|csam|snapwork|msf|digilocker|zhiliaoapp|telegram|discord|adobe|dropbox|spotify|netflix)|us\.zoom|net\.one97|in\.org\.npci|in\.gov|in\.amazon|nic\.|gov\.|org\.telegram|org\.khanacademy|org\.wordpress)(\.|$)/i;
-const THIRD_PARTY_SLUG = /whatsapp|zoom|google|microsoft|teams|paytm|phonepe|digilocker|umang|bhim|youtube|instagram|facebook|telegram|webex|truecaller/i;
+const THIRD_PARTY_PACKAGE = /^(com\.(whatsapp|google|android|facebook|instagram|microsoft|skype|linkedin|twitter|snapchat|truecaller|phonepe|amazon|flipkart|cisco|dreamplug|mobikwik_new|freecharge|duolingo|sbi|axis|csam|snapwork|msf|digilocker|zhiliaoapp|telegram|discord|adobe|dropbox|spotify|netflix|eterno|nis)|us\.zoom|net\.one97|in\.org\.npci|in\.gov|in\.amazon|nic\.|gov\.|org\.telegram|org\.khanacademy|org\.wordpress)(\.|$)/i;
+const THIRD_PARTY_SLUG = /whatsapp|zoom|google|microsoft|teams|paytm|phonepe|digilocker|umang|bhim|youtube|instagram|facebook|telegram|webex|truecaller|dailyhunt|inshorts/i;
 
 /**
  * Platforms that rent an institute a branded app. A site built on one of them
@@ -184,6 +186,9 @@ const INSTITUTE_WORDS = new Set([
   'learning', 'learn', 'study', 'studies', 'centre', 'center', 'international', 'english', 'medium', 'public',
   'convent', 'vidyalaya', 'mahavidyalaya', 'prashala', 'shala', 'the', 'of', 'and', 'for', 'by', 'app',
   'official', 'online', 'live', 'pvt', 'ltd', 'private', 'limited', 'llp', 'trust', 'society', 'pune', 'mumbai',
+  // what a news house is, not which one
+  'news', 'tv', 'channel', 'media', 'digital', 'daily', 'network', 'broadcast', 'broadcasting', 'newspaper',
+  'times', 'express', 'today', 'samachar', 'khabar', 'varta', 'patrika', 'dainik', 'marathi', 'hindi',
 ]);
 
 function distinctive(name) {
@@ -428,6 +433,8 @@ const ANGLE = {
   college: 'Admissions, notices, timetables and results in an app with their name on it',
   preschool: 'Daily photos and updates for parents, fees and admissions in their own app',
   driving_school: 'Lesson booking, slot reminders and test prep in their own app',
+  media_house: 'Breaking-news push alerts in their own app, and a newsroom admin where reporters file and editors publish from one place',
+  news_agency: 'Their own news app with push alerts, and an admin panel to publish stories, videos and e-paper in one place',
 };
 
 /** The opening for a lead the check found without an app, or null. */

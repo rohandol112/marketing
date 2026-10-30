@@ -57,6 +57,13 @@ the institute's name on it is a sale in itself, so every lead in those categorie
 check**, and **Review queue → App pitch** lists the ones that have none, ranked by deal readiness,
 with the line to open with and the **Institute App** package priced next to it.
 
+News channels, newspapers, news agencies and portals (**Media house / news channel**, **News agency
+/ digital news portal**) get the same check. Tanz built a news app and newsroom admin for a news
+channel; a news house without an app raises the `no_news_app` gap, which only the **Newsroom App**
+package answers, so a channel is never priced the school app or the other way round. National and
+state media groups (Times, Lokmat, Sakal, ABP, Zee, TV9...) are excluded as chains: their Pune
+offices are bureaus. Sweep them with the **News and media (app pitch)** preset.
+
 "You have no app" said to an owner who has one ends the call, so `no_app` is the hardest verdict
 to earn. Three looks, cheapest first:
 
@@ -82,7 +89,8 @@ app status, with the same rule: unknown is never "they have no app".
 Checks run on their own after a sweep that includes these categories (`APP_CHECK_ON_DISCOVERY`,
 capped by `APP_CHECK_MAX_PER_RUN`), queued behind the site audits so they read a fresh one. **Check
 for apps** in the App pitch queue does the rest, or a selection. The **Schools and coaching (app
-pitch)** preset in Discovery sweeps all five categories.
+pitch)** preset in Discovery sweeps the five education categories. `/review?queue=apps` opens the
+list directly.
 
 ## Who is never a prospect
 
@@ -417,7 +425,7 @@ server/
   migrations/          init · rls · confidence_and_lifecycle · external_id · … · lead_quality
   seeds/01_tanz.js     62 services from the service profile deck, 6 packages
   scripts/cleanup.js   the data cleanup, from the command line
-  src/lib/             scoring · confidence · deal · classify · categories(73) · places · osm
+  src/lib/             scoring · confidence · deal · classify · categories(75) · places · osm
                        mapsDiscovery · instagram · geminiDiscovery · llm · prompts · websiteAudit
                        appPresence
                        queue · wa · geo(nominatim) · util
@@ -426,7 +434,7 @@ server/
 web/src/pages/         Board · Review · Discovery · Analytics · Settings
 ```
 
-`npm test` in `server/` runs 194 tests: scoring and confidence, including hand-labelled fixtures
+`npm test` in `server/` runs 197 tests: scoring and confidence, including hand-labelled fixtures
 (Narenkumar, Mauli Garden, Tangent) that must always rank tier A - if a weight change breaks them,
 the weight change is wrong until closed-won data proves otherwise - plus phone parsing, exclusions,
 category sorting, the website auditor against a fake network, the Maps and Instagram lookups, the

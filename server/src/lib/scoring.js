@@ -66,8 +66,9 @@ export const DEFAULT_SCORING_CONFIG = {
     lowRating: { max: 3.9, minReviews: 30, points: 5 },   // reputation management is the sale
     dormantInstagram: { days: 60, points: 5 },
     adsAlreadyRunning: -4,      // ads tag or pixel: someone is probably already doing this
-    // Schools and coaching classes only, and only once their site, Google Play
-    // and the App Store were all checked (lib/appPresence.js). Unchecked is zero.
+    // Schools, coaching classes and news houses only, and only once their site,
+    // Google Play and the App Store were all checked (lib/appPresence.js).
+    // Unchecked is zero.
     noApp: 4,
   },
 
@@ -310,7 +311,7 @@ export function scoreLead(lead, cfg = DEFAULT_SCORING_CONFIG, ctx = {}) {
   }
 
   if (lead.app_status === 'no_app' && isAppPitch(catId)) {
-    award(digital, c.digital.noApp, 'No app of their own', 'Checked their site, Google Play and the App Store - students and parents have nothing of theirs to install');
+    award(digital, c.digital.noApp, 'No app of their own', 'Checked their site, Google Play and the App Store - their students, parents or readers have nothing of theirs to install');
   }
 
   // The ratio that matters most: lots of real customers, almost no followers.

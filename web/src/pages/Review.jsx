@@ -27,9 +27,9 @@ const QUEUES = {
   apps: {
     label: 'App pitch',
     blurb:
-      'Schools, colleges, coaching classes and preschools with no app of their own - their site, Google Play and the ' +
-      'App Store were all checked, and a same-name app elsewhere keeps a lead out until someone looks. Their students ' +
-      'and parents get fees, results and notices over WhatsApp groups; an app with the institute\'s name on it is the pitch.',
+      'Schools, coaching classes, preschools and news houses with no app of their own - their site, Google Play and the ' +
+      'App Store were all checked, and a same-name app elsewhere keeps a lead out until someone looks. Institutes get the ' +
+      'institute app; news channels, papers and portals get our news app and newsroom admin. Narrow by category below.',
     params: { appPitch: 'true', status: 'pending_review', discoveryStatus: 'discovered,verifying,verified,qualified', sort: 'deal' },
     approvable: true,
   },
@@ -412,7 +412,7 @@ export default function Review() {
           <p>
             {queue === 'apps'
               ? (appFilter === 'no_app'
-                ? 'No school or coaching class has been confirmed app-less yet. Sweep "Schools and coaching (app pitch)" in Discovery, or press Check for apps - each lead is checked on its site, Google Play and the App Store.'
+                ? 'Nothing confirmed app-less yet. Sweep "Schools and coaching" or "News and media" (app pitch) in Discovery, or press Check for apps - each lead is checked on its site, Google Play and the App Store.'
                 : 'Nothing in this group.')
               : queue === 'hot'
               ? 'Nothing ready to close yet. Look up Google reviews for the "Needs data" queue, or sweep a high-value category - leads land here once they have a phone, real demand and a visible gap.'

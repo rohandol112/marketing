@@ -98,6 +98,8 @@ const OSM_TAGS = {
   driving_school: ['amenity=driving_school'],
   coaching_institute: ['amenity=training', 'office=educational_institution'],
   exam_coaching: ['amenity=training', 'office=educational_institution'],
+  media_house: ['office=newspaper', 'amenity=studio'],
+  news_agency: ['office=newspaper', 'office=news_agency'],
   preschool: ['amenity=kindergarten'],
   car_service: ['shop=car_repair'],
   pest_control: ['craft=pest_control'],

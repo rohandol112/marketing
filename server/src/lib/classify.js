@@ -84,6 +84,7 @@ const FOOD_CATS = ['restaurant', 'cafe', 'bakery', 'cloud_kitchen', 'caterer'];
 const HOTEL_CATS = ['hotel', 'resort', 'wedding_venue', 'banquet_hall', 'restaurant'];
 const EDU_CATS = ['preschool', 'coaching_institute', 'exam_coaching', 'private_school', 'college', 'driving_school'];
 const FINANCE_CATS = ['wealth_management', 'law_firm'];
+const MEDIA_CATS = ['media_house', 'news_agency'];
 
 const CHAIN_GROUPS = [
   {
@@ -156,6 +157,19 @@ const CHAIN_GROUPS = [
       'triumphant institute of management education', 'chate coaching', 'chate classes', 'mahesh tutorials',
       'hello kids', 'kangaroo kids', 'tree house playgroup', 'mothers pride', 'little elly',
       'orchids the international school',
+    ],
+  },
+  {
+    // National and state media groups: a Pune office is a bureau, and the app
+    // and the marketing are bought at head office.
+    cats: MEDIA_CATS,
+    phrases: [
+      'times of india', 'bennett coleman', 'maharashtra times', 'navbharat times', 'economic times', 'mumbai mirror',
+      'pune mirror', 'hindustan times', 'indian express', 'loksatta', 'financial express', 'lokmat', 'sakal',
+      'saam tv', 'pudhari', 'divya marathi', 'dainik bhaskar', 'punyanagari', 'deccan herald', 'the hindu',
+      'abp majha', 'abp news', 'zee news', 'zee 24 taas', 'zee marathi', 'tv9 marathi', 'tv9 bharatvarsh', 'news18',
+      'aaj tak', 'india today', 'ndtv', 'republic tv', 'republic bharat', 'cnbc', 'press trust of india', 'pti',
+      'ani news', 'asian news international', 'ians', 'all india radio', 'doordarshan', 'radio mirchi', 'red fm',
     ],
   },
   {

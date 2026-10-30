@@ -1,4 +1,4 @@
-import { tierOf } from './categories.js';
+import { tierOf, appGapOf } from './categories.js';
 import { asObject, daysSince } from './util.js';
 
 /**
@@ -213,7 +213,8 @@ export function gapTagsFor(lead) {
   if (reviews !== null && followers >= 0 && reviews / Math.max(followers, 1) > 1) tags.add('high_review_ratio');
 
   if (lead.runs_ads === false || (audit.tracking && !audit.tracking.adTracking)) tags.add('no_ads');
-  if (lead.app_status === 'no_app') tags.add('no_app');
+  // A news house without an app is pitched the newsroom product, a school the institute app.
+  if (lead.app_status === 'no_app') tags.add(appGapOf(lead.normalized_category));
   return [...tags];
 }
 

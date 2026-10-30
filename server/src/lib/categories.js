@@ -15,7 +15,10 @@
  *
  * `appPitch` marks the categories where "they have no app of their own" is a
  * sale in itself - students and parents who get fees, results and notices over
- * WhatsApp groups. Those leads are checked for an app (services/appCheck.js).
+ * WhatsApp groups, readers who get the news from someone else's app. Those
+ * leads are checked for an app (services/appCheck.js). `appGap` names the gap
+ * tag a missing app raises, so a news house is priced the newsroom product and
+ * a school the institute app.
  */
 
 export const CATEGORIES = [
@@ -48,6 +51,9 @@ export const CATEGORIES = [
   // ---------- T1: professional + retail ----------
   { id: 'jewellery_store', label: 'Jewellery store', group: 'Retail', tier: 'T1', q: 'jewellery showroom', type: 'jewelry_store', season: [9, 10, 11] },
   { id: 'car_dealer', label: 'Car dealership', group: 'Automotive', tier: 'T1', q: 'car dealership showroom', type: 'car_dealer' },
+  // Tanz built a news app and newsroom admin for a news channel. The same
+  // product sells to the next channel, paper or portal without an app.
+  { id: 'media_house', label: 'Media house / news channel', group: 'Media', tier: 'T1', q: 'news channel newspaper media house', type: null, appPitch: true, appGap: 'no_news_app' },
   { id: 'law_firm', label: 'Law firm', group: 'Professional', tier: 'T1', q: 'law firm advocates', type: 'lawyer' },
   { id: 'wealth_management', label: 'Wealth management / financial advisor', group: 'Professional', tier: 'T1', q: 'financial advisor wealth management', type: null },
   { id: 'private_school', label: 'Private school', group: 'Education', tier: 'T1', q: 'private school', type: 'school', season: [2, 3, 4], appPitch: true },
@@ -84,6 +90,7 @@ export const CATEGORIES = [
   // ---------- T2: services + trades ----------
   { id: 'packers_movers', label: 'Packers and movers', group: 'Services', tier: 'T2', q: 'packers and movers', type: 'moving_company' },
   { id: 'travel_agency', label: 'Travel agency', group: 'Services', tier: 'T2', q: 'travel agency', type: 'travel_agency', season: [3, 4, 9] },
+  { id: 'news_agency', label: 'News agency / digital news portal', group: 'Media', tier: 'T2', q: 'news agency local news portal online news', type: null, appPitch: true, appGap: 'no_news_app' },
   { id: 'driving_school', label: 'Driving school', group: 'Education', tier: 'T2', q: 'driving school', type: null },
   { id: 'coaching_institute', label: 'Coaching institute', group: 'Education', tier: 'T2', q: 'coaching classes institute', type: null, season: [3, 4, 5], appPitch: true },
   { id: 'preschool', label: 'Preschool / daycare', group: 'Education', tier: 'T2', q: 'preschool daycare', type: 'preschool', season: [2, 3, 4], appPitch: true },
@@ -130,6 +137,11 @@ export function isAppPitch(categoryId) {
   return Boolean(CATEGORY_BY_ID.get(categoryId)?.appPitch);
 }
 
+/** The gap tag a confirmed "no app" raises for this category (lib/deal.js). */
+export function appGapOf(categoryId) {
+  return CATEGORY_BY_ID.get(categoryId)?.appGap || 'no_app';
+}
+
 /** Sensible starting sweep: everything a full-service agency can actually sell into. */
 export const PRESETS = {
   high_value: {
@@ -155,7 +167,12 @@ export const PRESETS = {
   education_apps: {
     label: 'Schools and coaching (app pitch)',
     note: 'Schools, colleges, coaching classes and preschools. Each lead is checked for an app of its own.',
-    ids: CATEGORIES.filter((c) => c.appPitch).map((c) => c.id),
+    ids: CATEGORIES.filter((c) => c.appPitch && c.group === 'Education').map((c) => c.id),
+  },
+  news_media: {
+    label: 'News and media (app pitch)',
+    note: 'News channels, newspapers, agencies and portals. Each is checked for an app; the pitch is our news app and newsroom admin.',
+    ids: CATEGORIES.filter((c) => c.group === 'Media').map((c) => c.id),
   },
   property: {
     label: 'Property and interiors',

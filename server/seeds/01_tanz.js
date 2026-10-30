@@ -55,6 +55,8 @@ const CATALOG = [
   ['Information Technology (IT)', 'Software Technology', 'iOS Development', ['no_app']],
   ['Information Technology (IT)', 'Software Technology', 'Software Development', []],
   ['Information Technology (IT)', 'Software Technology', 'Productivity Software', []],
+  // The news product Tanz built for a news channel (migrations/20260101001100_news_product.js).
+  ['Information Technology (IT)', 'Software Technology', 'News App and Newsroom Admin', ['no_news_app']],
 
   ['Creativity', 'Design', 'Graphic Design', ['no_branding']],
   ['Creativity', 'Design', 'Logo Design', ['no_branding']],
@@ -130,6 +132,14 @@ const PACKAGES = [
     price_min: 120000, price_max: 300000, billing: 'one_time', sort_order: 7,
     best_for: 'A school or coaching institute whose students and parents have no app of theirs',
     includes: ['App Design', 'Android Development', 'iOS Development'],
+  },
+  // Only the news service: anything tagged no_app here would be offered to schools too.
+  {
+    name: 'Newsroom App',
+    tagline: 'Their own news app with push alerts, and the newsroom admin to run it.',
+    price_min: 150000, price_max: 350000, billing: 'one_time', sort_order: 8,
+    best_for: 'A news channel, newspaper or portal whose readers have no app of theirs',
+    includes: ['News App and Newsroom Admin'],
   },
 ];
 

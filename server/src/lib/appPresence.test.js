@@ -221,3 +221,32 @@ test('the pitch line exists only for a confirmed no_app', () => {
   assert.match(appPitchLine({ ...school, normalized_category: 'exam_coaching', review_count: 12, app_status: 'no_app' }), /^No app of their own\. Test series/);
   assert.equal(appPitchLine({ ...school, app_status: 'unclear' }), null);
 });
+
+/* ---------------- news channels and media houses ---------------- */
+
+test('a news house without an app is priced the newsroom product, a school the institute app', () => {
+  const catalog = [
+    { name: 'Android Development', gap_tags: ['no_app'] }, { name: 'iOS Development', gap_tags: ['no_app'] },
+    { name: 'App Design', gap_tags: ['no_app'] }, { name: 'News App and Newsroom Admin', gap_tags: ['no_news_app'] },
+  ];
+  const packages = [
+    { name: 'Institute App', price_min: 120000, includes: ['App Design', 'Android Development', 'iOS Development'] },
+    { name: 'Newsroom App', price_min: 150000, includes: ['News App and Newsroom Admin'] },
+  ];
+  const channel = { name: 'Kothrud Live News', normalized_category: 'media_house', review_count: 320, app_status: 'no_app' };
+  const bigSchool = { name: 'Abhinav Vidyalaya', normalized_category: 'private_school', review_count: 900, app_status: 'no_app' };
+  assert.deepEqual(gapTagsFor(channel).filter((t) => t.startsWith('no_') && t.includes('app')), ['no_news_app']);
+  assert.equal(recommendPackage(channel, packages, catalog, { only: ['no_news_app'] }).name, 'Newsroom App');
+  assert.equal(recommendPackage(bigSchool, packages, catalog, { only: ['no_app'] }).name, 'Institute App');
+});
+
+test('news houses score the app gap, get a newsroom pitch, and aggregators are not their app', () => {
+  const pts = (lead) => (scoreLead(lead).breakdown.digital.signals.find((s) => s.label === 'No app of their own') || {}).points || 0;
+  assert.equal(pts({ name: 'Kothrud Live News', normalized_category: 'news_agency', app_status: 'no_app' }), 4);
+  assert.match(appPitchLine({ normalized_category: 'media_house', review_count: 320, app_status: 'no_app' }), /^320 Google reviews and no app\. Breaking-news push alerts/);
+  const a = appsInHtml('<a href="https://play.google.com/store/apps/details?id=com.eterno">Read us on Dailyhunt</a>'
+    + '<a href="https://play.google.com/store/apps/details?id=com.nis.app">Inshorts</a>');
+  assert.deepEqual(a.android, []);
+  assert.equal(appNameMatch('Pune Live News', 'Kothrud Live News'), 0);
+  assert.equal(appNameMatch('Pudhari News - Marathi', 'Pudhari'), 1);
+});
