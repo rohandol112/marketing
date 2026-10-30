@@ -129,24 +129,56 @@ export function failureReason(e) {
 }
 
 /**
- * Reasoning effort, one step down. Measured 2026-10-31 on the production
- * discovery request (Kothrud coaching classes, 16,000 output tokens): max
- * spent 15,715 tokens reasoning in 147s and stopped incomplete with no answer
- * - every category, every sweep; high answered in 60s with 16 businesses and
- * 3,025 reasoning tokens; medium in 43s with 11.
+ * What Luna needs to answer at a given effort. Measured 2026-10-31 on the
+ * production discovery request (Kothrud coaching classes):
+ *
+ *   max, 16,000 tokens   reasoned 15,715 in 147s, stopped incomplete, no answer
+ *                        (every category of every sweep until this fix)
+ *   max, 32,000 tokens   answered in 247s: 19 businesses, 21,460 reasoning tokens
+ *   max, 64,000 tokens   still reasoning at 300s, when Node's fetch gave up
+ *                        waiting for headers (UND_ERR_HEADERS_TIMEOUT)
+ *   high, 16,000 tokens  answered in 60s: 16 businesses, 3,025 reasoning tokens
+ *
+ * So the deep efforts get a budget that leaves room to answer, a timeout of
+ * their own, and a streamed response: headers arrive at once and events keep
+ * flowing while it reasons, which Node's 300s header wait never sees.
  */
-const LOWER_EFFORT = { max: 'high', xhigh: 'high', high: 'medium' };
+const DEEP_EFFORTS = new Set(['max', 'xhigh']);
+export const lunaOutputBudget = effort => (DEEP_EFFORTS.has(effort) ? Math.max(cfg.maxOutput, 64000) : cfg.maxOutput);
+const lunaTimeoutMs = effort => (DEEP_EFFORTS.has(effort) ? Math.max(cfg.timeoutMs, cfg.lunaTimeoutMs) : cfg.timeoutMs);
 
-// Process-local, like Gemini model cooldowns: once an effort has run out of
-// output budget, later categories start at the one that answered.
-let lunaStepDown = null;
-export const lunaEffortNow = () => lunaStepDown || cfg.lunaEffort;
-export function resetLunaEffort() { lunaStepDown = null; }
+/**
+ * The final response object out of a Responses API event stream. A plain JSON
+ * body (a test double, or a proxy that ignored stream:true) is read as is.
+ */
+export async function readResponse(res) {
+  if (!/text\/event-stream/i.test(res.headers?.get?.('content-type') || '') || !res.body) return res.json();
+  const decoder = new TextDecoder();
+  let buffer = '', final = null;
+  const take = block => {
+    const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('\n');
+    if (!data || data === '[DONE]') return;
+    let event;
+    try { event = JSON.parse(data); } catch { return; }
+    if (['response.completed', 'response.incomplete', 'response.failed'].includes(event.type) && event.response) final = event.response;
+    if (event.type === 'error') throw Object.assign(new Error('Luna stream error'), { status: Number(event.status) || 500 });
+  };
+  for await (const chunk of res.body) {
+    buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, '\n');
+    let at;
+    while ((at = buffer.indexOf('\n\n')) >= 0) { take(buffer.slice(0, at)); buffer = buffer.slice(at + 2); }
+  }
+  if (buffer.trim()) take(buffer);
+  if (!final) throw new Error('Luna stream ended without a final response');
+  return final;
+}
 
 async function lunaDiscovery(args) {
   let calls = 0, tokensIn = 0, tokensOut = 0, costUsd = 0, toolCalls = 0, mapsCalls = 0;
   const leads = [], warnings = [];
-  const request = (pass, effort) => withRetry(async () => {
+  const effort = cfg.lunaEffort;
+  const budget = lunaOutputBudget(effort);
+  const request = pass => withRetry(async () => {
     await lunaRate.acquire();
     args.onAttempt?.();
     calls++;
@@ -155,14 +187,13 @@ async function lunaDiscovery(args) {
       headers: { 'X-Goog-Api-Key': cfg.mapsKey }, allowed_tools: ['search_places'], require_approval: 'never' });
     const res = await fetch('https://api.openai.com/v1/responses', { method: 'POST',
       headers: { Authorization: 'Bearer ' + cfg.openaiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: cfg.lunaModel, reasoning: { effort }, store: false,
-        max_output_tokens: cfg.maxOutput, max_tool_calls: 3, tool_choice: 'required', include: ['web_search_call.action.sources'], tools,
+      body: JSON.stringify({ model: cfg.lunaModel, reasoning: { effort }, store: false, stream: true,
+        max_output_tokens: budget, max_tool_calls: 3, tool_choice: 'required', include: ['web_search_call.action.sources'], tools,
         instructions: INSTRUCTIONS + '\nUse web search first (at most 2 search actions). Use Maps only to resolve missing listing details; pageSize at most 5 and includeExtendedDetails false. Do not claim a precise radius match from text alone.', input: query(args, pass) }),
-      signal: AbortSignal.timeout(cfg.timeoutMs) });
+      signal: AbortSignal.timeout(lunaTimeoutMs(effort)) });
     if (!res.ok) throw requestError(res.status, res.headers.get('retry-after'));
-    return res.json();
+    return readResponse(res);
   }, { retryTimeout: false });
-  // A response that ran out of budget is still billed: count it either way.
   const account = response => {
     const usage = response.usage || {}, details = usage.input_tokens_details || {};
     tokensIn += usage.input_tokens || 0; tokensOut += usage.output_tokens || 0;
@@ -175,22 +206,14 @@ async function lunaDiscovery(args) {
   };
   for (let pass = 0; pass < (args.passes || 1); pass++) {
     try {
-      const effort = lunaEffortNow();
-      let response = await request(pass, effort);
+      const response = await request(pass);
+      // A response that ran out of budget is still billed: count it either way.
       account(response);
-      const lower = LOWER_EFFORT[effort];
-      if (response.status === 'incomplete' && response.incomplete_details?.reason === 'max_output_tokens' && lower) {
-        if (!lunaStepDown || lunaStepDown === effort) {
-          lunaStepDown = lower;
-          console.warn('[discovery] Luna at ' + effort + ' effort spent its whole ' + cfg.maxOutput + '-token output budget reasoning; using ' + lower + ' from now on. Set DISCOVERY_LUNA_EFFORT=' + lower + ' to skip the wasted call.');
-        }
-        warnings.push('Luna at ' + effort + ' effort used its whole output budget reasoning and returned nothing; retried at ' + lower + '. Set DISCOVERY_LUNA_EFFORT=' + lower + '.');
-        response = await request(pass, lower);
-        account(response);
-      }
       if (response.status !== 'completed') {
         const reason = response.incomplete_details?.reason;
-        warnings.push('Luna batch incomplete' + (reason ? ' (' + reason + ')' : '') + '; no partial JSON imported.');
+        warnings.push('Luna batch incomplete' + (reason ? ' (' + reason + ')' : '')
+          + (reason === 'max_output_tokens' ? ' - it used all ' + budget + ' output tokens at ' + effort + ' effort; raise DISCOVERY_MAX_OUTPUT_TOKENS' : '')
+          + '; no partial JSON imported.');
         continue;
       }
       const sources = [], chunks = [];

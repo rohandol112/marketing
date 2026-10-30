@@ -1,6 +1,6 @@
 # Luna + Gemini discovery
 
-Select **Luna + Gemini** in Discovery. Luna (high effort) and one successful Gemini model search each selected category in parallel. Gemini tries 3.8 Flash, 3.7 Flash, 3.6 Flash, 3.5 Flash, then 3.5 Flash Lite, using medium thinking where supported. It stops on the first supported response rather than running all five models for extra results. Results are merged, then go through existing exclusions, deduplication, audits, geocoding and human review. Existing modes and stored records are preserved. No migration or seed is required.
+Select **Luna + Gemini** in Discovery. Luna (max effort) and one successful Gemini model search each selected category in parallel. Gemini tries 3.8 Flash, 3.7 Flash, 3.6 Flash, 3.5 Flash, then 3.5 Flash Lite, using medium thinking where supported. It stops on the first supported response rather than running all five models for extra results. Results are merged, then go through existing exclusions, deduplication, audits, geocoding and human review. Existing modes and stored records are preserved. No migration or seed is required.
 
 ## Deployment environment
 
@@ -24,7 +24,8 @@ DISCOVERY_REQUESTS_PER_MINUTE=600
 DISCOVERY_COMBINED_CONCURRENCY=8
 DISCOVERY_PROVIDER_TIMEOUT_MS=180000
 DISCOVERY_LUNA_MODEL=gpt-6-luna
-DISCOVERY_LUNA_EFFORT=high
+DISCOVERY_LUNA_EFFORT=max
+DISCOVERY_LUNA_TIMEOUT_MS=600000
 DISCOVERY_GEMINI_MODELS=gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite
 DISCOVERY_GEMINI_THINKING=medium
 DISCOVERY_GEMINI_TOOL=search
@@ -34,7 +35,7 @@ DISCOVERY_MAX_OUTPUT_TOKENS=16000
 DISCOVERY_RETRIES=2
 ```
 
-Use `DISCOVERY_GEMINI_TOOL=maps` for native Maps instead of Google Search. Restart after changing environment values. Explicit existing values override the new defaults: set `DISCOVERY_LUNA_EFFORT=high` and update `DISCOVERY_GEMINI_MODELS` and `DISCOVERY_GEMINI_THINKING` if they are already set. The five default model IDs were listed by the configured key's model-list endpoint on 2026-10-30; availability and tool support may change. Discovery is independent of `LLM_PROVIDER`; configure drafts and research separately below.
+Use `DISCOVERY_GEMINI_TOOL=maps` for native Maps instead of Google Search. Restart after changing environment values. Explicit existing values override the new defaults: set `DISCOVERY_LUNA_EFFORT=max` and update `DISCOVERY_GEMINI_MODELS` and `DISCOVERY_GEMINI_THINKING` if they are already set. The five default model IDs were listed by the configured key's model-list endpoint on 2026-10-30; availability and tool support may change. Discovery is independent of `LLM_PROVIDER`; configure drafts and research separately below.
 
 ## Terra drafts and research
 
@@ -59,7 +60,7 @@ Optional ceilings are `LLM_MAX_OUTPUT_TOKENS=8192` for routine generation and `L
 
 ## Reliability and limits
 
-- **Luna effort: use `high`, not `max`.** Measured on 2026-10-31 with the production discovery request (coaching classes, Kothrud, 16,000 output tokens): `max` reasoned for 15,715 tokens over 147 seconds and stopped `incomplete` without an answer, on every category of every sweep; `high` answered in 60 seconds with 16 businesses and 3,025 reasoning tokens; `medium` in 43 seconds with 11. If Luna runs out of output budget while reasoning, the call is retried once at the next lower effort, and that effort is used for the rest of the process (the warning names the setting to change). The wasted call is still billed and counted.
+- **Luna at max effort needs room and time.** Measured on 2026-10-31 with the production discovery request (coaching classes, Kothrud): with 16,000 output tokens max reasoned for 15,715 of them in 147 seconds and stopped `incomplete` without an answer - which is what every category of every sweep did until this was fixed; with 32,000 it answered in 247 seconds with 19 businesses after 21,460 reasoning tokens; with 64,000 it was still reasoning at 300 seconds, when Node's fetch gave up waiting for response headers. So max and xhigh requests get at least 64,000 output tokens (more if `DISCOVERY_MAX_OUTPUT_TOKENS` is higher), their own timeout (`DISCOVERY_LUNA_TIMEOUT_MS`, default ten minutes), and a streamed response, whose headers arrive at once. Effort is never lowered: a call that still runs out of budget is reported with the setting to raise. Expect four to six minutes per category at max; `DISCOVERY_COMBINED_CONCURRENCY` categories run side by side.
 
 - Combined discovery defaults to one pass per provider per category: one Luna discovery request and one Gemini discovery pass. Set `DISCOVERY_COMBINED_PASSES=1` for this default; the Discovery dropdown can explicitly select more. The server uses the same default when a request omits `maxPages`. Other discovery sources retain `PLACES_MAX_PAGES`. Existing saved runs retain their explicit pass count. Extraction, tool actions and failure retries can add requests beyond those two discovery passes.
 - Each pass asks for up to 25 candidates by default (`DISCOVERY_RESULTS_PER_PASS=25`), so the default pair targets up to 50 before overlap, evidence checks and existing-record deduplication. This is a prompt target, not guaranteed unique contacts. Providers may return fewer; raising the target can increase tokens and tool activity without increasing the number of discovery passes.

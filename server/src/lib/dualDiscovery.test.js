@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withRetry, normalizeCandidates, mergeCandidates, discoverCombined, failureReason, lunaEffortNow, resetLunaEffort } from './dualDiscovery.js';
+import { withRetry, normalizeCandidates, mergeCandidates, discoverCombined, failureReason, lunaOutputBudget, readResponse } from './dualDiscovery.js';
 import config from '../config.js';
 import { callMaps } from './mapsDiscovery.js';
 
@@ -162,39 +162,67 @@ test('Gemini transport preserves Retry-After for cascade scheduling', async () =
   }), e => e.status === 429 && e.retryAfterMs === 90000);
 });
 
-test('Luna that spends its whole output budget reasoning is asked again one effort lower, and stays there', async () => {
-  // Measured on production's request: max effort reasoned for 15,715 of 16,000
-  // tokens and answered nothing, on every category; high answered in 60s.
+test('Luna at max effort is streamed with room to answer, and its answer is used', async () => {
+  // Measured on production's request: max needs ~25k output tokens and 4-6
+  // minutes. At 16k it answered nothing; past 300s Node's fetch gave up on
+  // headers. Streaming sends headers at once.
+  const saved = { fetch: globalThis.fetch, combined: { ...config.combined }, key: config.gemini.apiKey };
+  config.combined.retries = 0; config.combined.mapsMcp = false; config.combined.lunaEffort = 'max';
+  config.combined.maxOutput = 16000; config.combined.geminiModels = []; config.gemini.apiKey = 'test';
+  const bodies = [];
+  const final = { status: 'completed', usage: { input_tokens: 21248, output_tokens: 24504 },
+    output: [{ type: 'reasoning' }, { type: 'message', content: [{ text: JSON.stringify({ businesses: [{ name: 'Clinic A', phone: '9876543210',
+      evidence: [{ field: 'phone', url: citation }] }] }), annotations: [{ url: citation }] }] }] };
+  globalThis.fetch = async (target, options) => {
+    bodies.push(JSON.parse(options.body));
+    const sse = [
+      { type: 'response.created', response: { status: 'in_progress' } },
+      { type: 'response.output_item.added', item: { type: 'reasoning' } },
+      { type: 'response.completed', response: final },
+    ].map((e) => 'event: ' + e.type + '\r\ndata: ' + JSON.stringify(e) + '\r\n\r\n').join('');
+    return new Response(sse, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  try {
+    const r = await discoverCombined(args);
+    assert.equal(bodies.length, 1, 'one call, never a second at a lower effort');
+    assert.equal(bodies[0].reasoning.effort, 'max');
+    assert.equal(bodies[0].stream, true);
+    assert.equal(bodies[0].max_output_tokens, lunaOutputBudget('max'));
+    assert.ok(lunaOutputBudget('max') >= 32000, 'max gets more than the 24,504 tokens it was measured to need');
+    assert.equal(lunaOutputBudget('high'), 16000, 'other efforts keep the configured budget');
+    assert.equal(r.leads.length, 1); assert.equal(r.leads[0].name, 'Clinic A');
+    assert.equal(r.report.providers.luna.tokensOut, 24504);
+  } finally {
+    globalThis.fetch = saved.fetch; Object.assign(config.combined, saved.combined); config.gemini.apiKey = saved.key;
+  }
+});
+
+test('Luna that still runs out of budget says how to fix it and never drops below the configured effort', async () => {
   const saved = { fetch: globalThis.fetch, combined: { ...config.combined }, key: config.gemini.apiKey };
   config.combined.retries = 0; config.combined.mapsMcp = false; config.combined.lunaEffort = 'max';
   config.combined.geminiModels = []; config.gemini.apiKey = 'test';
-  resetLunaEffort();
   const efforts = [];
   globalThis.fetch = async (target, options) => {
-    const effort = JSON.parse(options.body).reasoning.effort;
-    efforts.push(effort);
-    if (effort === 'max') {
-      return { ok: true, json: async () => ({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' },
-        usage: { input_tokens: 27402, output_tokens: 15715 }, output: [{ type: 'reasoning' }] }) };
-    }
-    return { ok: true, json: async () => ({ status: 'completed', usage: { input_tokens: 25922, output_tokens: 6790 },
-      output: [{ type: 'message', content: [{ text: JSON.stringify({ businesses: [{ name: 'Clinic A', phone: '9876543210',
-        evidence: [{ field: 'phone', url: citation }] }] }), annotations: [{ url: citation }] }] }] }) };
+    efforts.push(JSON.parse(options.body).reasoning.effort);
+    return { ok: true, json: async () => ({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' },
+      usage: { input_tokens: 27402, output_tokens: 64000 }, output: [{ type: 'reasoning' }] }) };
   };
   try {
-    const first = await discoverCombined(args);
-    assert.deepEqual(efforts, ['max', 'high']);
-    assert.equal(first.leads.length, 1);
-    assert.match(first.warnings.join(' '), /used its whole output budget reasoning.*retried at high.*DISCOVERY_LUNA_EFFORT=high/);
-    assert.ok(first.report.providers.luna.tokensOut >= 15715 + 6790, 'the wasted call is still counted');
-    assert.equal(lunaEffortNow(), 'high');
-    efforts.length = 0;
-    await discoverCombined(args);
-    assert.deepEqual(efforts, ['high'], 'later categories skip the effort that cannot answer');
+    const r = await discoverCombined(args);
+    assert.deepEqual(efforts, ['max']);
+    assert.equal(r.leads.length, 0);
+    assert.match(r.warnings.join(' '), /used all \d+ output tokens at max effort; raise DISCOVERY_MAX_OUTPUT_TOKENS/);
+    assert.equal(r.report.providers.luna.tokensOut, 64000, 'the call is still counted');
   } finally {
-    resetLunaEffort();
     globalThis.fetch = saved.fetch; Object.assign(config.combined, saved.combined); config.gemini.apiKey = saved.key;
   }
+});
+
+test('a stream that ends without a final response is an error, not an empty answer', async () => {
+  const res = new Response('event: response.created\ndata: {"type":"response.created","response":{}}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  await assert.rejects(readResponse(res), /ended without a final response/);
+  const err = new Response('data: {"type":"error","status":429}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  await assert.rejects(readResponse(err), (e) => e.status === 429);
 });
 
 test('failure reasons name the cause, not "network/request failure" for everything', () => {
