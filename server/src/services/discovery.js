@@ -215,8 +215,9 @@ export async function runDiscovery({ runId }) {
       const result = await discoverCombined({ categoryId, areaLabel: run.area_label, center, radiusM,
         regionCode: run.region_code || undefined, passes: maxPages,
         onAttempt: () => {
-          if (combinedRequests >= (params.requestLimit || 100)) throw new Error('request_limit');
+          if (params.requestLimit > 0 && combinedRequests >= params.requestLimit) throw new Error('request_limit');
           combinedRequests++;
+          void progress();
         } });
       tokensIn += result.tokensIn; tokensOut += result.tokensOut;
       combinedCost += result.costUsd; llmModel = result.model;
@@ -485,15 +486,23 @@ export async function runDiscovery({ runId }) {
    * throttles per IP, and recall carries state from one category to the next.
    */
   const total = categories.length;
-  const concurrency = source === 'maps' ? Math.max(1, Math.min(config.maps.categoryConcurrency, total)) : 1;
+  const concurrency = source === 'combined' ? total : source === 'maps' ? Math.max(1, Math.min(config.maps.categoryConcurrency, total)) : 1;
   const inFlight = new Set();
   let next = 0;
   let done = 0;
   let cancelled = false;
 
-  const progress = () => updateRun(runId, {
-    progress: JSON.stringify({ done, total, currentCategory: [...inFlight].join(', ') || null }),
-  }).catch(() => {});
+  let progressWrites = Promise.resolve();
+  const progress = () => {
+    const patch = {
+      progress: JSON.stringify({ done, total, currentCategory: [...inFlight].join(', ') || null }),
+      api_calls: source === 'combined' ? combinedRequests : apiCalls,
+      found_count: found, new_count: created, dupe_count: dupes,
+      tokens_in: tokensIn || null, tokens_out: tokensOut || null,
+    };
+    progressWrites = progressWrites.then(() => updateRun(runId, patch)).catch(() => {});
+    return progressWrites;
+  };
 
   console.log(
     tag + ' started: ' + source + ' sweep of ' + total + ' categor' + (total === 1 ? 'y' : 'ies') + ' within '
@@ -503,7 +512,7 @@ export async function runDiscovery({ runId }) {
 
   async function worker() {
     while (!stop && !cancelled && next < total) {
-      if (source === 'combined' && combinedRequests >= (params.requestLimit || 100)) {
+      if (source === 'combined' && params.requestLimit > 0 && combinedRequests >= params.requestLimit) {
         stop = { error: 'Request limit reached. Completed results are kept; narrow the area or increase the request limit for another run.' };
         break;
       }
@@ -611,7 +620,7 @@ export async function runDiscovery({ runId }) {
       ...params, source, grounded, warnings: [...warnings],
       excluded, suppressed, reclassifiedAway, enrichQueued, appQueued,
       durationMs: Date.now() - startedAt,
-      ...(source === 'combined' ? { discoveryReports, requestLimit: params.requestLimit || 100,
+      ...(source === 'combined' ? { discoveryReports, requestLimit: params.requestLimit || 0,
         attemptedRequests: combinedRequests, costEstimateIncomplete: true } : {}),
     }),
     finished_at: now(),

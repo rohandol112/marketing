@@ -18,7 +18,7 @@ export default function Discovery() {
   const [radiusKm, setRadiusKm] = useState(5);
   const [selected, setSelected] = useState(new Set(app.presets.balanced.ids));
   const [minReviews, setMinReviews] = useState(0);
-  const [requestLimit, setRequestLimit] = useState(100);
+  const [requestLimit, setRequestLimit] = useState(0);
   // The configured source, unless the server says it cannot run - then the
   // best one that can, so the first click is not a sweep that fails.
   const [source, setSourceState] = useState(() => {
@@ -350,8 +350,8 @@ export default function Discovery() {
                 </div>
               </div>
               {source === 'combined' && <div className="field">
-                <label htmlFor="request-limit">Maximum provider requests (including retries)</label>
-                <input id="request-limit" type="number" min="2" max="1000" value={requestLimit} onChange={e => setRequestLimit(e.target.value)} />
+                <label htmlFor="request-limit">Maximum provider requests (0 = unlimited)</label>
+                <input id="request-limit" type="number" min="0" value={requestLimit} onChange={e => setRequestLimit(e.target.value)} />
                 <div className="small muted">Both providers search each category. Results per batch vary; this limit bounds requests, not the final invoice.</div>
               </div>}
             </>
@@ -415,7 +415,7 @@ export default function Discovery() {
           </div>
           <div>
             <div className="stat-label">API calls</div>
-            <div className="stat-value">{source === 'combined' ? '≤ ' + requestLimit : estimate?.calls ?? 0}</div>
+            <div className="stat-value">{source === 'combined' ? (Number(requestLimit) === 0 ? 'Unlimited' : '≤ ' + requestLimit) : estimate?.calls ?? 0}</div>
           </div>
           <div>
             <div className="stat-label">Up to</div>
@@ -499,7 +499,7 @@ export default function Discovery() {
             <tr key={r.categoryId + provider}><td>{r.categoryId.replace(/_/g, ' ')}</td><td>{provider}</td><td>{p.candidates}</td><td>{p.withPhone}</td><td>{p.calls}</td><td>${p.estimatedCostUsd.toFixed(4)}</td></tr>
           ))}</tbody>
         </table></div>
-        <p className="small">{activeRun.params.discoveryReports.reduce((n,r) => n + r.overlap, 0)} shared candidates across providers. {activeRun.params.attemptedRequests} of {activeRun.params.requestLimit} provider requests used.</p>
+        <p className="small">{activeRun.params.discoveryReports.reduce((n,r) => n + r.overlap, 0)} shared candidates across providers. {activeRun.params.attemptedRequests} provider requests used{activeRun.params.requestLimit ? ' of ' + activeRun.params.requestLimit : ' (no request cutoff)'}.</p>
         <p className="small">Found only by Luna: {activeRun.params.discoveryReports.reduce((n,r) => n + (r.lunaOnly || 0), 0)}. Found only by Gemini: {activeRun.params.discoveryReports.reduce((n,r) => n + (r.geminiOnly || 0), 0)}. Counts are per category; existing records are deduplicated at ingestion.</p>
         <p className="small muted">{activeRun.params.discoveryReports[0].costNote}</p>
         {[...new Set(activeRun.params.warnings || [])].map(w => <div key={w} className="callout" style={{ marginTop: 6 }}>{w}</div>)}

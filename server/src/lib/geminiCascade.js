@@ -15,7 +15,7 @@ export function createGeminiCascade({ now = Date.now, sleepImpl = sleep, random 
       const delay = error.status === 404 ? 300000 : Math.min(300000, 60000 * 2 ** (failures - 1));
       const retryAfterMs = Math.max(0, Number(error.retryAfterMs) || 0);
       health.set(model, { failures, until: now() + Math.max(delay, retryAfterMs) });
-      onWarning(model + ': ' + (error.status ? 'HTTP ' + error.status : 'temporary request failure') + '; trying fallback.');
+      onWarning(model + ': ' + (error.status ? 'HTTP ' + error.status : ['TimeoutError', 'AbortError'].includes(error.name) ? 'provider timeout' : 'network/request failure') + '; trying fallback.');
       if (transient(error) && !retryCandidates.has(model)) retryCandidates.set(model, { model, retryAfterMs, retryAt: now() + retryAfterMs });
     };
     const call = async model => {

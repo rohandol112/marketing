@@ -82,9 +82,9 @@ app.post('/runs', async (c) => {
   const maxPages = Math.min(Math.max(Number(b.maxPages ?? (source === 'combined' ? config.combined.passes : config.places.maxPages)), 1), 3);
   if (!['combined', 'maps', 'gemini', 'places', 'osm', 'mock'].includes(source)) throw new HttpError(400, 'Unknown discovery source');
   if (source === 'combined' && !combinedAvailable()) throw new HttpError(409, 'Combined discovery needs OPENAI_API_KEY and GEMINI_API_KEY.');
-  const requestLimit = Number(b.requestLimit ?? 100);
-  if (source === 'combined' && (!Number.isInteger(requestLimit) || requestLimit < 2 || requestLimit > 1000)) {
-    throw new HttpError(400, 'Request limit must be an integer between 2 and 1000.');
+  const requestLimit = Number(b.requestLimit ?? 0);
+  if (source === 'combined' && (!Number.isInteger(requestLimit) || requestLimit !== 0 && requestLimit < 2)) {
+    throw new HttpError(400, 'Request limit must be 0 (unlimited) or an integer of at least 2.');
   }
   if (!Number.isFinite(radiusM) || !Number.isFinite(maxPages) || !Number.isFinite(Number(b.lat)) || !Number.isFinite(Number(b.lng))
     || Math.abs(Number(b.lat)) > 90 || Math.abs(Number(b.lng)) > 180) throw new HttpError(400, 'Invalid location or search limits');
