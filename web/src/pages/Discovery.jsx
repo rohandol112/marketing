@@ -18,16 +18,21 @@ export default function Discovery() {
   const [radiusKm, setRadiusKm] = useState(5);
   const [selected, setSelected] = useState(new Set(app.presets.balanced.ids));
   const [minReviews, setMinReviews] = useState(0);
-  const [maxPages, setMaxPages] = useState(app.modes.maxPages || 3);
   const [requestLimit, setRequestLimit] = useState(100);
   // The configured source, unless the server says it cannot run - then the
   // best one that can, so the first click is not a sweep that fails.
-  const [source, setSource] = useState(() => {
+  const [source, setSourceState] = useState(() => {
     const all = app.discoverySources || [];
     const configured = all.find((s) => s.id === app.modes.discoverySource);
     if (!configured || configured.available) return app.modes.discoverySource;
     return (all.find((s) => s.available && s.recommended) || all.find((s) => s.available) || configured).id;
   });
+  const [maxPages, setMaxPages] = useState(source === 'combined' ? app.modes.combinedPasses || 1 : app.modes.maxPages || 3);
+  const setSource = id => {
+    if (id === source) return;
+    setSourceState(id);
+    setMaxPages(id === 'combined' ? app.modes.combinedPasses || 1 : app.modes.maxPages || 3);
+  };
   // Directory sources carry no review count - the whole demand score - so each
   // new lead can be looked up on Google Maps after the sweep.
   const [enrichMaps, setEnrichMaps] = useState(app.modes.mapsEnrichOnDiscovery !== false);
@@ -340,7 +345,7 @@ export default function Discovery() {
                 <div className="field">
                   <label>{source === 'combined' || source === 'maps' ? 'Search batches per category' : 'Pages per category'}</label>
                   <select value={maxPages} onChange={(e) => setMaxPages(Number(e.target.value))}>
-                    {[1, 2, 3].map(n => <option key={n} value={n}>{source === 'combined' || source === 'maps' ? n + ' search batch' + (n > 1 ? 'es' : '') : n + ' (' + n * 20 + ' results maximum)'}</option>)}
+                    {[1, 2, 3].map(n => <option key={n} value={n}>{source === 'combined' ? n + ' per provider (' + n * 2 + ' discovery passes total)' : source === 'maps' ? n + ' search batch' + (n > 1 ? 'es' : '') : n + ' (' + n * 20 + ' results maximum)'}</option>)}
                   </select>
                 </div>
               </div>

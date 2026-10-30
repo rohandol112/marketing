@@ -78,9 +78,8 @@ app.post('/runs', async (c) => {
 
   const categories = resolveCategories(b);
   const radiusM = Math.min(Math.max(Number(b.radiusM || 5000), 200), 50000);
-  const maxPages = Math.min(Math.max(Number(b.maxPages || config.places.maxPages), 1), 3);
-
   const source = b.source || discoverySource();
+  const maxPages = Math.min(Math.max(Number(b.maxPages ?? (source === 'combined' ? config.combined.passes : config.places.maxPages)), 1), 3);
   if (!['combined', 'maps', 'gemini', 'places', 'osm', 'mock'].includes(source)) throw new HttpError(400, 'Unknown discovery source');
   if (source === 'combined' && !combinedAvailable()) throw new HttpError(409, 'Combined discovery needs OPENAI_API_KEY and GEMINI_API_KEY.');
   const requestLimit = Number(b.requestLimit ?? 100);

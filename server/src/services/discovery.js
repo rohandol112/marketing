@@ -151,10 +151,10 @@ export async function runDiscovery({ runId }) {
   const center = { lat: Number(run.lat), lng: Number(run.lng) };
   const radiusM = Number(run.radius_m);
   const tier = params.fieldTier || config.places.fieldTier;
-  const maxPages = params.maxPages || config.places.maxPages;
+  const source = params.source || discoverySource();
+  const maxPages = params.maxPages || (source === 'combined' ? config.combined.passes : config.places.maxPages);
   const defaultCountry = run.region_code || (await tenantCountry(tenantId));
 
-  const source = params.source || discoverySource();
   const tag = '[discovery] ' + runId;
   const startedAt = Date.now();
 

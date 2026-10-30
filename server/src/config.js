@@ -92,6 +92,7 @@ export const config = {
   verboseAudit: bool(process.env.VERBOSE_AUDIT, false),
 
   combined: {
+    passes: Math.max(1, Math.min(3, num(process.env.DISCOVERY_COMBINED_PASSES, 1))),
     openaiKey: process.env.OPENAI_API_KEY || '',
     lunaModel: process.env.DISCOVERY_LUNA_MODEL || 'gpt-6-luna',
     lunaEffort: process.env.DISCOVERY_LUNA_EFFORT || 'max',

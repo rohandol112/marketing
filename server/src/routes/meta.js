@@ -100,6 +100,7 @@ app.get('/bootstrap', async (c) => {
       pagespeedEnabled: config.pagespeed.enabled,
       fieldTier: config.places.fieldTier,
       maxPages: config.places.maxPages,
+      combinedPasses: config.combined.passes,
       mapsLookup: mapsLookupAvailable(),
       instagramLookup: instagramAvailable(),
       socialLookup: socialMethod !== 'none',

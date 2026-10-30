@@ -19,6 +19,7 @@ Optional controls, with defaults:
 ```dotenv
 # Omit this to keep your current default; the UI still offers combined mode.
 DISCOVERY_SOURCE=combined
+DISCOVERY_COMBINED_PASSES=1
 DISCOVERY_LUNA_MODEL=gpt-6-luna
 DISCOVERY_LUNA_EFFORT=max
 DISCOVERY_GEMINI_MODELS=gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite
@@ -54,6 +55,8 @@ For a new lead with no cached research, expect one Terra Medium research request
 Optional ceilings are `LLM_MAX_OUTPUT_TOKENS=8192` for routine generation and `LLM_RESEARCH_MAX_OUTPUT_TOKENS=16000` for research; these include reasoning tokens. Existing explicit Gemini/Groq/Ollama/OpenRouter selections remain supported; when changing providers, change the model names to match. Restart after environment changes. No new API key, migration, seed or data deletion is required.
 
 ## Reliability and limits
+
+- Combined discovery defaults to one pass per provider per category: one Luna discovery request and one Gemini discovery pass. Set `DISCOVERY_COMBINED_PASSES=1` for this default; the Discovery dropdown can explicitly select more. The server uses the same default when a request omits `maxPages`. Other discovery sources retain `PLACES_MAX_PAGES`. Existing saved runs retain their explicit pass count. Extraction, tool actions and failure retries can add requests beyond those two discovery passes.
 
 - Luna retains its bounded exponential retries and jitter (`DISCOVERY_RETRIES`, default two). Gemini tries each eligible model once on transient failure before moving to the next. A successful, valid empty list stops the chain; missing citations, unsupported candidates or invalid extraction advance to another model. There is no memory-only fallback.
 - If the Gemini chain produces no supported response, it waits briefly (at least one second, with jitter) and retries the transiently failed models once, in the same strongest-to-weakest order. Success ends the second pass; there is no third pass. `DISCOVERY_RETRIES=0` disables this delayed retry cascade. `Retry-After` is honored per model; delays over 60 seconds exclude that model from the immediate second pass. A successful research response may still require a separate extraction request.
