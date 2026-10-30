@@ -1,6 +1,6 @@
 # Luna + Gemini discovery
 
-Select **Luna + Gemini** in Discovery. Luna Medium and one successful Gemini model search each selected category in parallel. Gemini tries 3.8 Flash, 3.7 Flash, 3.6 Flash, then 3.5 Flash, using medium thinking. It stops on the first supported response rather than running all four models for extra results. Results are merged, then go through existing exclusions, deduplication, audits, geocoding and human review. Existing modes and stored records are preserved. No migration or seed is required.
+Select **Luna + Gemini** in Discovery. Luna Max and one successful Gemini model search each selected category in parallel. Gemini tries 3.8 Flash, 3.7 Flash, 3.6 Flash, then 3.5 Flash, using medium thinking. It stops on the first supported response rather than running all four models for extra results. Results are merged, then go through existing exclusions, deduplication, audits, geocoding and human review. Existing modes and stored records are preserved. No migration or seed is required.
 
 ## Deployment environment
 
@@ -20,7 +20,7 @@ Optional controls, with defaults:
 # Omit this to keep your current default; the UI still offers combined mode.
 DISCOVERY_SOURCE=combined
 DISCOVERY_LUNA_MODEL=gpt-6-luna
-DISCOVERY_LUNA_EFFORT=medium
+DISCOVERY_LUNA_EFFORT=max
 DISCOVERY_GEMINI_MODELS=gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash
 DISCOVERY_GEMINI_THINKING=medium
 DISCOVERY_GEMINI_TOOL=search
@@ -30,7 +30,7 @@ DISCOVERY_MAX_OUTPUT_TOKENS=16000
 DISCOVERY_RETRIES=2
 ```
 
-Use `DISCOVERY_GEMINI_TOOL=maps` for native Maps instead of Google Search. Restart after changing environment values. Explicit existing values override the new defaults: update `DISCOVERY_GEMINI_MODELS` and `DISCOVERY_GEMINI_THINKING` if they are already set. The four default model IDs were listed by the configured key's model-list endpoint on 2026-10-30; availability and tool support may change. No global `LLM_PROVIDER` change is needed; existing AI features retain their configured provider.
+Use `DISCOVERY_GEMINI_TOOL=maps` for native Maps instead of Google Search. Restart after changing environment values. Explicit existing values override the new defaults: set `DISCOVERY_LUNA_EFFORT=max` and update `DISCOVERY_GEMINI_MODELS` and `DISCOVERY_GEMINI_THINKING` if they are already set. The four default model IDs were listed by the configured key's model-list endpoint on 2026-10-30; availability and tool support may change. No global `LLM_PROVIDER` change is needed; existing AI features retain their configured provider.
 
 ## Reliability and limits
 

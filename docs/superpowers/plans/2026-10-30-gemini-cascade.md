@@ -4,7 +4,7 @@
 
 **Architecture:** Retain parallel provider discovery and deterministic merging. Use an in-process, per-model cooldown around the existing Gemini research/extraction operation; no database migration, dependencies, or changes to other AI features.
 
-**Scope:** User requested implementation directly. Defaults: Luna Medium; Gemini Medium with 3.8 Flash, 3.7 Flash, 3.6 Flash, then 3.5 Flash. All four IDs were returned by the configured key's model-list endpoint on 2026-10-30.
+**Scope:** User requested implementation directly. Defaults: Luna Max (updated from Medium at the user's explicit request); Gemini Medium with 3.8 Flash, 3.7 Flash, 3.6 Flash, then 3.5 Flash. All four IDs were returned by the configured key's model-list endpoint on 2026-10-30.
 
 ## Task 1: Bounded cascade and recovery
 

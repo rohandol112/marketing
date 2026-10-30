@@ -94,7 +94,7 @@ export const config = {
   combined: {
     openaiKey: process.env.OPENAI_API_KEY || '',
     lunaModel: process.env.DISCOVERY_LUNA_MODEL || 'gpt-6-luna',
-    lunaEffort: process.env.DISCOVERY_LUNA_EFFORT || 'medium',
+    lunaEffort: process.env.DISCOVERY_LUNA_EFFORT || 'max',
     geminiModels: (process.env.DISCOVERY_GEMINI_MODELS || 'gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash').split(',').map(s => s.trim()).filter(Boolean),
     thinking: process.env.DISCOVERY_GEMINI_THINKING || 'medium',
     geminiTool: process.env.DISCOVERY_GEMINI_TOOL === 'maps' ? 'google_maps' : 'google_search',
