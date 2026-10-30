@@ -55,7 +55,7 @@ test('combined run queues through the route, saves merged leads and report witho
       body: JSON.stringify({ lat: 18.5, lng: 73.8, source: 'combined', categories: ['dental_clinic'], requestLimit: 1 }) });
     assert.equal(invalid.status, 400);
     const res = await app.request('/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lat: 18.5, lng: 73.8, source: 'combined', categories: ['dental_clinic'], areaLabel: 'Pune', regionCode: 'IN', requestLimit: 8 }) });
+      body: JSON.stringify({ lat: 18.5, lng: 73.8, source: 'combined', categories: ['dental_clinic'], areaLabel: 'Pune', regionCode: 'IN' }) });
     assert.equal(res.status, 201); assert.equal(inserted.jobs[0].kind, 'discovery');
     await runDiscovery({ runId: run.id });
     assert.equal(inserted.leads.length, 1);
@@ -67,6 +67,7 @@ test('combined run queues through the route, saves merged leads and report witho
     assert.equal(finalPatch.status, 'done'); assert.equal(finalPatch.new_count, 1);
     const params = JSON.parse(finalPatch.params);
     assert.equal(params.attemptedRequests, 2);
+    assert.equal(params.requestLimit, 0, 'combined runs have no request cutoff by default');
     assert.equal(params.discoveryReports[0].overlap, 1);
     assert.equal(inserted.api_usage.length, 1);
   } finally {

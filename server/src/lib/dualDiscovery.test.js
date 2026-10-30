@@ -15,6 +15,12 @@ test('503 retries exponentially, honors Retry-After, and never retries auth', as
 });
 
 const args = { categoryId: 'dental', areaLabel: 'Kothrud', center: { lat: 18.5, lng: 73.8 }, radiusM: 5000 };
+test('a Luna timeout is not retried through three full waiting periods', async () => {
+  let calls = 0;
+  await assert.rejects(withRetry(async () => { calls++; throw Object.assign(new Error('timeout'), { name: 'TimeoutError' }); },
+    { retryTimeout: false, sleepImpl: async () => assert.fail('timeout must not retry') }));
+  assert.equal(calls, 1);
+});
 const citation = 'https://clinic.example/contact';
 test('uncited phones, third-party ratings and invented coordinates are not accepted', () => {
   const rows = normalizeCandidates([{ name: 'Clinic A', phone: '1234567890', lat: 18.5, lng: 73.8,
