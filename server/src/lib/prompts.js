@@ -125,6 +125,7 @@ function instagramLine(lead, ig) {
   if (ig && ig.found) {
     const quiet = daysSince(ig.lastPostAt);
     const from = ig.source === 'gemini_search_grounding' ? ' (from a Google search result, not Instagram itself)'
+      : ig.source === 'openai_web_search' ? ' (from a web search result, not Instagram itself)'
       : ig.source === 'human' ? ' (checked by a person)' : ' (from Instagram itself)';
     return '@' + (ig.username || ig.handle) + ': '
       + (ig.followers != null ? Number(ig.followers).toLocaleString('en-IN') : 'UNKNOWN') + ' followers, '
@@ -245,7 +246,7 @@ const SOCIAL_SHAPE = {
 };
 
 const SOCIAL_SYSTEM = [
-  'You look up the public social media accounts of one local business with Google Search.',
+  'You look up the public social media accounts of one local business with web search.',
   '',
   'Rules:',
   '1. Search first, every time. Facts about a small business are not in your memory - an answer you did not search for is a guess, and a guess is worse than null.',
@@ -312,7 +313,7 @@ const BRIEF_SCHEMA = {
     headline: { type: 'STRING', description: 'One sentence a rep can read in three seconds: what this business is and why it is worth calling.' },
     gaps: {
       type: 'ARRAY',
-      minItems: 2,
+      minItems: 0,
       items: {
         type: 'OBJECT',
         properties: {
@@ -327,7 +328,7 @@ const BRIEF_SCHEMA = {
     best_channel: { type: 'STRING', enum: ['whatsapp', 'phone', 'walk_in', 'email', 'instagram_dm'] },
     best_time: { type: 'STRING', description: 'When to reach them, reasoned from the category' },
     opener: { type: 'STRING', description: 'The first two sentences, spoken out loud. Under 45 words.' },
-    recommended_package_id: { type: 'STRING' },
+    recommended_package_id: { type: 'STRING', nullable: true, description: 'An ID from the supplied package list, or null if no suitable package is configured' },
     price_band: { type: 'STRING', description: 'The range to anchor on, from the package list' },
     objection_to_expect: { type: 'STRING' },
     objection_response: { type: 'STRING' },
@@ -485,6 +486,24 @@ export async function generateWhatsappOpener({ tenant, catalog, packages, lead }
     schema: WA_SCHEMA,
     fallback: () => waFallback(lead, tenant),
     temperature: 0.6,
+  });
+}
+
+/** One shared evidence packet and one model call for both outreach views. */
+export async function generateOutreach({ tenant, catalog, packages, lead, research }) {
+  return generateJson({
+    system: buildSystemPrompt(tenant, catalog, packages),
+    user: [
+      'Write a pre-call brief and a matching first WhatsApp message with one follow-up, as one JSON object.',
+      leadContext(lead, { research }),
+      'Use the same strongest evidenced opportunity in the brief and messages. Do not invent a digital problem, buying intent, owner identity or lost revenue.',
+      'A missing search result is not proof of absence. Protected websites are unknown, not broken. Say when evidence is thin and use a neutral discovery question.',
+      'Keep the spoken opener under 45 words; WhatsApp under 60 words, one question, no URLs or contact details. Use {{repName}} for the rep name.',
+      'The follow-up should offer a useful different angle, not repeat the first message. Prices and packages must come from the supplied catalogue.',
+    ].join('\n\n'),
+    schema: { type: 'OBJECT', properties: { brief: BRIEF_SCHEMA, whatsapp: WA_SCHEMA }, required: ['brief', 'whatsapp'] },
+    fallback: () => ({ brief: briefFallback(lead, packages, catalog), whatsapp: waFallback(lead, tenant) }),
+    temperature: 0.5,
   });
 }
 

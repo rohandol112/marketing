@@ -4,7 +4,7 @@
 
 **Architecture:** Retain parallel provider discovery and deterministic merging. Use an in-process, per-model cooldown around the existing Gemini research/extraction operation; no database migration, dependencies, or changes to other AI features.
 
-**Scope:** User requested implementation directly. Defaults: Luna Max (updated from Medium at the user's explicit request); Gemini Medium with 3.8 Flash, 3.7 Flash, 3.6 Flash, then 3.5 Flash. All four IDs were returned by the configured key's model-list endpoint on 2026-10-30.
+**Scope:** User requested implementation directly. Defaults: Luna Max (updated from Medium at the user's explicit request); Gemini Medium with 3.8 Flash, 3.7 Flash, 3.6 Flash, 3.5 Flash, then 3.5 Flash Lite. All five IDs were returned by the configured key's model-list endpoint on 2026-10-30.
 
 ## Task 1: Bounded cascade and recovery
 
@@ -22,7 +22,7 @@
 
 ## Reliability decisions
 
-- Each eligible model is attempted once before a single final retry of the first transiently failed model. DISCOVERY_RETRIES=0 disables that final retry; Luna retains its existing retry setting.
+- Each eligible model is attempted once. Per the user's later direction, if the chain fails it waits briefly and retries the transiently failed models once in top-down order, stopping on success. DISCOVERY_RETRIES=0 disables that second cascade; Luna retains its existing retry setting.
 - Transient failures cool the model for 60 seconds, doubling on repeated failures to at most five minutes. A 404 is skipped for five minutes. Successful transport clears its cooldown.
 - Honor Retry-After; if it requires more than 60 seconds, omit the immediate final retry. Cooldowns are process-local and do not cancel already-running calls.
 - A valid zero-result response is success; invalid/uncited output advances the chain without being reimported as factual data.

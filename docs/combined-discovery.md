@@ -1,6 +1,6 @@
 # Luna + Gemini discovery
 
-Select **Luna + Gemini** in Discovery. Luna Max and one successful Gemini model search each selected category in parallel. Gemini tries 3.8 Flash, 3.7 Flash, 3.6 Flash, then 3.5 Flash, using medium thinking. It stops on the first supported response rather than running all four models for extra results. Results are merged, then go through existing exclusions, deduplication, audits, geocoding and human review. Existing modes and stored records are preserved. No migration or seed is required.
+Select **Luna + Gemini** in Discovery. Luna Max and one successful Gemini model search each selected category in parallel. Gemini tries 3.8 Flash, 3.7 Flash, 3.6 Flash, 3.5 Flash, then 3.5 Flash Lite, using medium thinking where supported. It stops on the first supported response rather than running all five models for extra results. Results are merged, then go through existing exclusions, deduplication, audits, geocoding and human review. Existing modes and stored records are preserved. No migration or seed is required.
 
 ## Deployment environment
 
@@ -21,7 +21,7 @@ Optional controls, with defaults:
 DISCOVERY_SOURCE=combined
 DISCOVERY_LUNA_MODEL=gpt-6-luna
 DISCOVERY_LUNA_EFFORT=max
-DISCOVERY_GEMINI_MODELS=gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash
+DISCOVERY_GEMINI_MODELS=gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite
 DISCOVERY_GEMINI_THINKING=medium
 DISCOVERY_GEMINI_TOOL=search
 DISCOVERY_MAPS_MCP=true
@@ -30,12 +30,33 @@ DISCOVERY_MAX_OUTPUT_TOKENS=16000
 DISCOVERY_RETRIES=2
 ```
 
-Use `DISCOVERY_GEMINI_TOOL=maps` for native Maps instead of Google Search. Restart after changing environment values. Explicit existing values override the new defaults: set `DISCOVERY_LUNA_EFFORT=max` and update `DISCOVERY_GEMINI_MODELS` and `DISCOVERY_GEMINI_THINKING` if they are already set. The four default model IDs were listed by the configured key's model-list endpoint on 2026-10-30; availability and tool support may change. No global `LLM_PROVIDER` change is needed; existing AI features retain their configured provider.
+Use `DISCOVERY_GEMINI_TOOL=maps` for native Maps instead of Google Search. Restart after changing environment values. Explicit existing values override the new defaults: set `DISCOVERY_LUNA_EFFORT=max` and update `DISCOVERY_GEMINI_MODELS` and `DISCOVERY_GEMINI_THINKING` if they are already set. The five default model IDs were listed by the configured key's model-list endpoint on 2026-10-30; availability and tool support may change. Discovery is independent of `LLM_PROVIDER`; configure drafts and research separately below.
+
+## Terra drafts and research
+
+Use the existing OpenAI key for these routes too:
+
+```dotenv
+LLM_PROVIDER=openai
+LLM_MODEL_MAIN=gpt-6.1-terra
+LLM_MODEL_FAST=gpt-6.1-terra
+LLM_MODEL_SEARCH=gpt-6.1-terra
+LLM_REASONING_EFFORT=low
+LLM_RESEARCH_EFFORT=medium
+```
+
+"Light" maps to the API value `low`. Briefs, messages, call-note extraction and next-step suggestions use Terra Low without search tools. Business research, verification and social research use Terra Medium with OpenAI web search. A response without executed search and source evidence is not accepted as researched facts. Google Maps/legacy Gemini discovery retain a separate Gemini model, so Terra is never sent to a Google endpoint.
+
+Opening either the brief or WhatsApp view now generates both the pre-call brief and WhatsApp opener/follow-up in one Terra Low request, after research if needed. The existing two endpoint response shapes and separate feedback IDs are preserved. Both views reuse the saved result; concurrent requests in one server process share the in-flight generation. Research retains its separate 30-day cache. Regenerating drafts reuses research when still current. Failed research/drafts are not reused as successful cached results. Historical suggestions are retained; model/effort changes create new cache keys instead of deleting rows.
+
+For a new lead with no cached research, expect one Terra Medium research request plus one Terra Low outreach request. Subsequent unchanged views use the application cache and make no model request. Research may perform multiple billable search actions. Prompt-cache hits are provider-dependent; cached read/write token usage is recorded when reported, not assumed. One combined generation logs one usage event while saving two suggestion rows for independent feedback.
+
+Optional ceilings are `LLM_MAX_OUTPUT_TOKENS=8192` for routine generation and `LLM_RESEARCH_MAX_OUTPUT_TOKENS=16000` for research; these include reasoning tokens. Existing explicit Gemini/Groq/Ollama/OpenRouter selections remain supported; when changing providers, change the model names to match. Restart after environment changes. No new API key, migration, seed or data deletion is required.
 
 ## Reliability and limits
 
 - Luna retains its bounded exponential retries and jitter (`DISCOVERY_RETRIES`, default two). Gemini tries each eligible model once on transient failure before moving to the next. A successful, valid empty list stops the chain; missing citations, unsupported candidates or invalid extraction advance to another model. There is no memory-only fallback.
-- If the Gemini chain produces no supported response, the first transiently failed model receives at most one final retry after a short jittered delay (at least one second). `DISCOVERY_RETRIES=0` disables this final retry. `Retry-After` is honored; delays over 60 seconds omit the immediate final retry. A successful research response may still require a separate extraction request.
+- If the Gemini chain produces no supported response, it waits briefly (at least one second, with jitter) and retries the transiently failed models once, in the same strongest-to-weakest order. Success ends the second pass; there is no third pass. `DISCOVERY_RETRIES=0` disables this delayed retry cascade. `Retry-After` is honored per model; delays over 60 seconds exclude that model from the immediate second pass. A successful research response may still require a separate extraction request.
 - Overloaded, throttled or timed-out Gemini models enter a process-local cooldown: 60 seconds, doubling on repeated failures up to five minutes, or longer when `Retry-After` requires it. Other categories skip cooling models. A missing model (404) is skipped for five minutes. Successful transport clears cooldown; expiration allows recovery. Process restarts clear this state, and calls already in flight are not cancelled. Authentication and daily-quota errors stop Gemini immediately.
 - Both credentials must be configured to select this mode. During a run, a failed provider does not discard the other's results. Warnings identify partial results.
 - The UI request limit defaults to 100 and includes retries and model fallback attempts. This bounds provider requests, not the invoice. Tool actions inside requests have their own limit. Cancellation stops subsequent categories; one already in flight can finish.

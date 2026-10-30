@@ -1,6 +1,6 @@
 import config from '../config.js';
 import {
-  activeProvider, modelsFor, parseLooseJson, RateLimiter, geminiUsable, isKeyRefusal, googleErrorSummary, noteGeminiKey,
+  geminiModel, parseLooseJson, RateLimiter, geminiUsable, isKeyRefusal, googleErrorSummary, noteGeminiKey,
 } from './llm.js';
 import { CATEGORY_BY_ID } from './categories.js';
 import { normalizeHost, normalizeUrl, normalizeName, firstPhone, nameSimilarity, addressKey, sleep } from './util.js';
@@ -316,7 +316,7 @@ export async function discoverCategory({
   const cat = CATEGORY_BY_ID.get(categoryId);
   if (!cat) throw new Error('Unknown category: ' + categoryId);
 
-  const model = modelsFor(activeProvider()).main;
+  const model = geminiModel();
   const radiusKm = Math.round((radiusM / 1000) * 10) / 10;
   const label = cat.label.toLowerCase();
   const angles = ANGLES.slice(0, Math.min(ANGLES.length, Math.max(1, passes))).map((f) => f(label));
@@ -450,7 +450,7 @@ export async function discoverCategory({
  *   none    - not found, or not the same business. Nothing is written.
  */
 export async function lookupBusiness(lead, { fetchImpl = fetch } = {}) {
-  const model = modelsFor(activeProvider()).main;
+  const model = geminiModel();
   const where = [lead.address, lead.locality, lead.region].filter(Boolean).join(', ');
   const user = [
     'Look up this business on Google Maps:',

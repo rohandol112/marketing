@@ -3,7 +3,7 @@ import knex from '../db/knex.js';
 import config, { discoverySource } from '../config.js';
 import { CATEGORIES, PRESETS, GROUPS } from '../lib/categories.js';
 import { STAGES, STAGE_META, LOSS_REASONS } from '../services/leads.js';
-import { llmStatus, geminiKeyStatus, geminiSearchAvailable, modelsFor, activeProvider } from '../lib/llm.js';
+import { llmStatus, geminiKeyStatus, geminiSearchAvailable, geminiModel, researchMethod } from '../lib/llm.js';
 import { queueStats, queueDepth } from '../lib/queue.js';
 import { estimateSweep } from '../lib/places.js';
 import { mapsLookupAvailable, thinkingFor } from '../lib/mapsDiscovery.js';
@@ -31,7 +31,7 @@ app.get('/bootstrap', async (c) => {
   const key = geminiKeyStatus();
   const geminiProblem = !config.gemini.apiKey ? 'No GEMINI_API_KEY set'
     : key.ok === false ? 'Google refused the key: ' + key.reason : null;
-  const socialMethod = instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? 'gemini_search_grounding' : 'none';
+  const socialMethod = instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? researchMethod() : 'none';
 
   return c.json({
     tenant,
@@ -136,14 +136,14 @@ app.get('/health', async (c) => {
     mapsLookup: {
       configured: mapsLookupAvailable(),
       // What the configured model is actually sent, not just the setting.
-      thinkingLevel: thinkingFor(modelsFor(activeProvider()).main)?.thinkingLevel || 'model default',
+      thinkingLevel: thinkingFor(geminiModel())?.thinkingLevel || 'model default',
       concurrency: config.maps.concurrency,
       categoryConcurrency: config.maps.categoryConcurrency,
     },
     instagram: { configured: instagramAvailable(), apiVersion: config.instagram.version },
     socialLookup: {
       configured: instagramAvailable() || geminiSearchAvailable(),
-      method: instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? 'gemini_search_grounding' : 'none',
+      method: instagramAvailable() ? 'meta_graph_api' : geminiSearchAvailable() ? researchMethod() : 'none',
     },
     maintenance: { auto: config.maintenance.auto, intervalHours: config.maintenance.intervalHours },
     queue: { ...queueStats(), depth: await queueDepth() },

@@ -544,13 +544,13 @@ function System() {
               )}
             </dd>
 
-            <dt>Gemini</dt>
+            <dt>AI drafts and research</dt>
             <dd>
               {!health.gemini.configured
                 ? <span className="badge b">not configured - templates only</span>
                 : health.gemini.keyAccepted === false
                   ? <span className="badge red">key refused by Google</span>
-                  : <span className="badge a">{health.gemini.modelMain}</span>}
+                  : <span className="badge a">{health.gemini.modelMain}{health.gemini.reasoningEffort ? ' · ' + health.gemini.reasoningEffort : ''}</span>}
               {health.gemini.keyAccepted === false && (
                 <div className="small" style={{ marginTop: 4, color: 'var(--red)' }}>
                   {health.gemini.keyProblem}. Maps discovery, Maps lookups, social search and AI drafts are off until
@@ -558,6 +558,8 @@ function System() {
                 </div>
               )}
               <div className="small faint" style={{ marginTop: 4 }}>
+                Research: {health.gemini.modelSearch}{health.gemini.researchEffort ? ' · ' + health.gemini.researchEffort : ''}
+                <br />
                 {health.gemini.rpmUsed}/{health.gemini.rpmLimit} requests this minute
                 {health.gemini.rpdLimit != null ? ' · ' + health.gemini.rpdUsed + '/' + health.gemini.rpdLimit + ' today' : ''}
               </div>

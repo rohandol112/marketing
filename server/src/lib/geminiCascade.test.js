@@ -17,17 +17,17 @@ test('overload cascades immediately and success stops further models', async () 
   assert.equal(result.model, '3.7');
 });
 
-test('after exhausting the chain only the first transient failure gets one delayed retry', async () => {
+test('after exhausting the chain retries transient models once in top-down order', async () => {
   const calls = [], waits = [];
   const run = createGeminiCascade({ sleepImpl: async ms => waits.push(ms), random: () => 0 });
   const result = await run(['3.8', '3.7', '3.6', '3.5'], async model => {
     calls.push(model);
-    if (calls.length <= 4) throw busy();
+    if (calls.length <= 5) throw busy();
     return { model };
   });
-  assert.deepEqual(calls, ['3.8', '3.7', '3.6', '3.5', '3.8']);
+  assert.deepEqual(calls, ['3.8', '3.7', '3.6', '3.5', '3.8', '3.7']);
   assert.deepEqual(waits, [1000]);
-  assert.equal(result.model, '3.8');
+  assert.equal(result.model, '3.7');
 });
 
 test('cooldown skips overloaded models across categories, doubles, and expires', async () => {
@@ -52,7 +52,8 @@ test('cooldown skips overloaded models across categories, doubles, and expires',
 
 test('Retry-After is honored and long retry delays do not block the cascade', async () => {
   const waits = [];
-  const run = createGeminiCascade({ now: () => 0, sleepImpl: async ms => waits.push(ms), random: () => 0 });
+  let time = 0;
+  const run = createGeminiCascade({ now: () => time, sleepImpl: async ms => { waits.push(ms); time += ms; }, random: () => 0 });
   let calls = 0;
   await run(['short'], async () => { if (++calls === 1) throw busy(429, { retryAfterMs: 2500 }); return {}; });
   assert.deepEqual(waits, [2500]);
@@ -90,6 +91,6 @@ test('retries can be disabled and exhausted failures preserve a null result', as
     const run = createGeminiCascade({ sleepImpl: async () => {}, random: () => 0 });
     const result = await run(['3.8', '3.7'], async () => { calls++; throw busy(); }, { retry });
     assert.equal(result, null);
-    assert.equal(calls, retry ? 3 : 2);
+    assert.equal(calls, retry ? 4 : 2);
   }
 });

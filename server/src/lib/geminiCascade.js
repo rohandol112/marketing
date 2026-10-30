@@ -8,7 +8,7 @@ const transient = e => [429, 500, 502, 503, 504].includes(e.status)
 export function createGeminiCascade({ now = Date.now, sleepImpl = sleep, random = Math.random } = {}) {
   const health = new Map();
   return async function cascade(models, attempt, { retry = true, onWarning = () => {} } = {}) {
-    let retryCandidate = null;
+    const retryCandidates = new Map();
     const fail = (model, error) => {
       if (error.keyRefused || error.dailyQuota || !transient(error) && error.status !== 404) throw error;
       const failures = Math.min(4, (health.get(model)?.failures || 0) + 1);
@@ -16,7 +16,7 @@ export function createGeminiCascade({ now = Date.now, sleepImpl = sleep, random 
       const retryAfterMs = Math.max(0, Number(error.retryAfterMs) || 0);
       health.set(model, { failures, until: now() + Math.max(delay, retryAfterMs) });
       onWarning(model + ': ' + (error.status ? 'HTTP ' + error.status : 'temporary request failure') + '; trying fallback.');
-      if (transient(error) && !retryCandidate) retryCandidate = { model, retryAfterMs };
+      if (transient(error) && !retryCandidates.has(model)) retryCandidates.set(model, { model, retryAfterMs, retryAt: now() + retryAfterMs });
     };
     const call = async model => {
       const result = await attempt(model);
@@ -35,13 +35,21 @@ export function createGeminiCascade({ now = Date.now, sleepImpl = sleep, random 
       } catch (error) { fail(model, error); }
     }
 
-    // Only one final retry, after trying alternatives. Do not tie up a sweep
-    // waiting on a long Retry-After; future categories can recover after cooldown.
-    if (retry && retryCandidate && retryCandidate.retryAfterMs <= 60000) {
-      const { model, retryAfterMs } = retryCandidate;
-      onWarning(model + ': fallback chain exhausted; one final retry.');
-      await sleepImpl(Math.max(retryAfterMs, 1000 + Math.floor(random() * 300)));
-      try { return await call(model); } catch (error) { fail(model, error); }
+    // One delayed second pass, strongest to weakest, over temporary failures
+    // from this invocation only. Later categories still respect model cooldowns.
+    const retryQueue = [...retryCandidates.values()].filter(c => c.retryAfterMs <= 60000);
+    if (retry && retryQueue.length) {
+      onWarning('Gemini fallback chain exhausted; one delayed retry cascade.');
+      const firstReady = Math.min(...retryQueue.map(c => Math.max(0, c.retryAt - now())));
+      await sleepImpl(Math.max(firstReady, 1000 + Math.floor(random() * 300)));
+      for (const { model, retryAt } of retryQueue) {
+        const remaining = retryAt - now();
+        if (remaining > 0) await sleepImpl(remaining);
+        try {
+          const result = await call(model);
+          if (result != null) return result;
+        } catch (error) { fail(model, error); }
+      }
     }
     return null;
   };
