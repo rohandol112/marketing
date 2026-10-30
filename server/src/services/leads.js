@@ -4,6 +4,7 @@ import {
   asObject, parseHumanCount, parseInstagramSnippet,
 } from '../lib/util.js';
 import { EXCLUSION_KINDS, EXCLUSION_LABELS } from '../lib/classify.js';
+import { APP_STATUSES } from '../lib/appPresence.js';
 import { enqueue } from '../lib/queue.js';
 import { rescoreLead, buildDedupeKey, tenantCountry } from './discovery.js';
 import { recordProvenance } from './lifecycle.js';
@@ -408,6 +409,8 @@ export const MANUAL_FIELDS = [
   'ig_handle', 'ig_followers', 'li_followers', 'fb_followers',
   'years_in_business', 'locations_count', 'runs_ads', 'agency_managed',
   'phone', 'email', 'website', 'name', 'category', 'normalized_category',
+  // a person who looked on the Play Store settles what a search could not
+  'app_status',
   'address', 'locality', 'postal_code', 'business_status',
   // a rep confirming "I looked, there is none" is real evidence
   'website_status',
@@ -467,6 +470,9 @@ export async function updateLeadFields({ tenantId, leadId, patch, userId }) {
     const handle = cleanInstagramHandle(clean.ig_handle);
     if (!handle) throw new HttpError(400, 'That does not look like an Instagram handle: ' + clean.ig_handle);
     clean.ig_handle = handle;
+  }
+  if (clean.app_status !== undefined && clean.app_status !== null && !APP_STATUSES.includes(clean.app_status)) {
+    throw new HttpError(400, 'app_status must be one of ' + APP_STATUSES.join(', ') + ', got: ' + clean.app_status);
   }
   if (clean.website_status !== undefined && clean.website_status !== null && !['none', 'unknown'].includes(clean.website_status)) {
     // The auditor decides whether a site works. A person can only say there is

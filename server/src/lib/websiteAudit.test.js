@@ -15,7 +15,7 @@ const filler = '<p>' + 'We have served Pune families with hallmarked gold and di
 
 test('a bare brochure site: every gap is named, nothing is invented', () => {
   const a = analyzeHtml(page('<h1>Ranka Jewellers</h1>' + filler + '<footer>© 2019 Ranka Jewellers</footer>'), { host: 'ranka.in', now: NOW });
-  assert.equal(a.v, 2);
+  assert.equal(a.v, 3);
   assert.equal(a.tracking.any, false);
   assert.equal(a.conversion.any, false);
   assert.equal(a.socialLinkCount, 0);

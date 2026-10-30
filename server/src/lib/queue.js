@@ -75,6 +75,8 @@ export const PRIORITY = {
   enrich_social: 175,
   geocode_lead: 180,
   audit_lead: 200,
+  // After the audits, so the check reads app links off a fresh audit.
+  app_check: 205,
   maintenance: 250,
 };
 

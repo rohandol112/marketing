@@ -11,13 +11,14 @@ import { DEFAULT_SCORING_CONFIG } from '../lib/scoring.js';
 import { detectExclusion } from '../lib/classify.js';
 import { instagramAvailable } from '../lib/instagram.js';
 import { ensureGeminiKey, geminiSearchAvailable } from '../lib/llm.js';
-import { CATEGORIES } from '../lib/categories.js';
+import { CATEGORIES, isAppPitch } from '../lib/categories.js';
 import { evaluationPatch, recordProvenance } from './lifecycle.js';
 import {
   uid, now, normalizeName, normalizeHost, normalizeUrl, normalizeLocality, cleanEmail, cleanInstagramHandle,
   nameSimilarity, haversineMeters, addDays, asObject, daysSince, phoneInfo, phoneFields, countryFor, addressKey,
 } from '../lib/util.js';
 import { enqueue, registerHandler } from '../lib/queue.js';
+import { queueAppChecks } from './appCheck.js';
 
 /**
  * Discovery: turn an area plus a category list into scored, deduplicated leads
@@ -579,6 +580,14 @@ export async function runDiscovery({ runId }) {
     enrichQueued = q.queued;
   }
 
+  // Schools and coaching classes: does each have an app of its own? One billed
+  // web search per lead, so capped, and a person can always queue the rest.
+  let appQueued = 0;
+  if ((params.checkApps ?? config.apps.onDiscovery) && categories.some((id) => isAppPitch(id))) {
+    const q = await queueAppChecks({ tenantId, runId, limit: config.apps.maxPerRun });
+    appQueued = q.queued;
+  }
+
   if (reclassifiedAway) {
     warnings.add(reclassifiedAway + ' places matched a broad map tag but belong to categories you did not pick, so they were left out.');
   }
@@ -600,7 +609,7 @@ export async function runDiscovery({ runId }) {
     error: stop ? stop.error : errors.length ? errors.slice(0, 10).join(' | ') : null,
     params: JSON.stringify({
       ...params, source, grounded, warnings: [...warnings],
-      excluded, suppressed, reclassifiedAway, enrichQueued,
+      excluded, suppressed, reclassifiedAway, enrichQueued, appQueued,
       durationMs: Date.now() - startedAt,
       ...(source === 'combined' ? { discoveryReports, requestLimit: params.requestLimit || 100,
         attemptedRequests: combinedRequests, costEstimateIncomplete: true } : {}),
@@ -617,7 +626,8 @@ export async function runDiscovery({ runId }) {
     + ': ' + done + '/' + total + ' categories, ' + found + ' found, ' + created + ' new, ' + dupes + ' already known'
     + (suppressed ? ', ' + suppressed + ' suppressed' : '') + (excluded ? ', ' + excluded + ' excluded' : '')
     + (errors.length ? ', ' + errors.length + ' error' + (errors.length === 1 ? '' : 's') : '')
-    + '; queued ' + auditQueue.length + ' site audits, ' + needGeo.length + ' geocodes, ' + enrichQueued + ' Maps lookups';
+    + '; queued ' + auditQueue.length + ' site audits, ' + needGeo.length + ' geocodes, ' + enrichQueued + ' Maps lookups'
+    + (appQueued ? ', ' + appQueued + ' app checks' : '');
   if (stop) console.error(tag + ' ' + summary + '. ' + stop.error);
   else console.log(tag + ' ' + summary);
 }

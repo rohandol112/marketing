@@ -51,8 +51,8 @@ const CATALOG = [
   ['Information Technology (IT)', 'Web Technology', 'Wordpress Development', ['no_website', 'placeholder_site']],
   ['Information Technology (IT)', 'Web Technology', 'Shopify E-Commerce', ['no_website']],
   ['Information Technology (IT)', 'Web Technology', 'Wix Custom Development', ['placeholder_site']],
-  ['Information Technology (IT)', 'Software Technology', 'Android Development', []],
-  ['Information Technology (IT)', 'Software Technology', 'iOS Development', []],
+  ['Information Technology (IT)', 'Software Technology', 'Android Development', ['no_app']],
+  ['Information Technology (IT)', 'Software Technology', 'iOS Development', ['no_app']],
   ['Information Technology (IT)', 'Software Technology', 'Software Development', []],
   ['Information Technology (IT)', 'Software Technology', 'Productivity Software', []],
 
@@ -63,7 +63,7 @@ const CATALOG = [
   ['Creativity', 'Design', 'Flyer, Brochure Design', []],
   ['Creativity', 'Tech', 'UI/UX Design', ['placeholder_site', 'not_mobile']],
   ['Creativity', 'Tech', 'Web Design', ['no_website', 'placeholder_site', 'not_mobile']],
-  ['Creativity', 'Tech', 'App Design', []],
+  ['Creativity', 'Tech', 'App Design', ['no_app']],
   ['Creativity', 'Visionary', 'Photo Editing', ['low_instagram']],
   ['Creativity', 'Visionary', 'Video Editing', ['no_video', 'low_instagram']],
   ['Creativity', 'Visionary', '2D-3D Animation', ['no_video']],
@@ -122,6 +122,14 @@ const PACKAGES = [
     price_min: 100000, price_max: null, billing: 'monthly', sort_order: 6,
     best_for: 'Chains, hospitals, developers, anyone with a real marketing budget',
     includes: ['Social Media Management', 'Influencer Marketing', 'Sponsored Ads', 'Lead Generation', 'Ai Chatbot Agent', 'Ai Process Automation', 'Professional Advertisement', 'Public Relation'],
+  },
+  // Same as migrations/20260101001000_app_presence.js adds to existing tenants.
+  {
+    name: 'Institute App',
+    tagline: 'Their own Android and iOS app for students and parents.',
+    price_min: 120000, price_max: 300000, billing: 'one_time', sort_order: 7,
+    best_for: 'A school or coaching institute whose students and parents have no app of theirs',
+    includes: ['App Design', 'Android Development', 'iOS Development'],
   },
 ];
 

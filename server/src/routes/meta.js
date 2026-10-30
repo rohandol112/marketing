@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import knex from '../db/knex.js';
 import config, { discoverySource } from '../config.js';
-import { CATEGORIES, PRESETS, GROUPS } from '../lib/categories.js';
+import { CATEGORIES, PRESETS, GROUPS, APP_PITCH_IDS } from '../lib/categories.js';
 import { STAGES, STAGE_META, LOSS_REASONS } from '../services/leads.js';
 import { llmStatus, geminiKeyStatus, geminiSearchAvailable, geminiModel, researchMethod } from '../lib/llm.js';
 import { queueStats, queueDepth } from '../lib/queue.js';
@@ -107,6 +107,10 @@ app.get('/bootstrap', async (c) => {
       socialMethod,
       geminiProblem,
       mapsEnrichOnDiscovery: config.enrich.mapsOnDiscovery,
+      // Schools and coaching: the Google Play half of the app check is a web search.
+      appCheck: geminiSearchAvailable(),
+      appCheckOnDiscovery: config.apps.onDiscovery,
+      appPitchCategories: APP_PITCH_IDS,
       maintenanceAuto: config.maintenance.auto,
     },
     exclusionLabels: EXCLUSION_LABELS,

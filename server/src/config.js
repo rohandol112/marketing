@@ -71,6 +71,16 @@ export const config = {
     mapsMaxPerRun: num(process.env.MAPS_ENRICH_MAX_PER_RUN, 200),
   },
 
+  /**
+   * The app check for schools, colleges, coaching classes and preschools: their
+   * site, Apple's own search, and a cited Google Play search (one billed web
+   * search per lead, ~15s). Run after a sweep, best prospects first.
+   */
+  apps: {
+    onDiscovery: bool(process.env.APP_CHECK_ON_DISCOVERY, true),
+    maxPerRun: num(process.env.APP_CHECK_MAX_PER_RUN, 100),
+  },
+
   overpassUrls: (process.env.OVERPASS_URLS || '')
     .split(',').map((s) => s.trim()).filter(Boolean),
 

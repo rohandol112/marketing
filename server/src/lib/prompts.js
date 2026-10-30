@@ -45,6 +45,7 @@ export function leadContext(lead, extras = {}) {
     'Google reviews: ' + (lead.review_count ?? 'UNKNOWN - nobody has checked') + (lead.rating ? ' at ' + lead.rating + ' stars' : ''),
     'Website: ' + websiteLine(lead),
     'Instagram: ' + instagramLine(lead, ig),
+    'Mobile app: ' + appLine(lead),
     'LinkedIn followers: ' + (lead.li_followers ?? 'UNKNOWN - not checked'),
     'Best contact: ' + contactLine(lead),
     'Data confidence: ' + (lead.confidence ?? '?') + '% - how much of this record is actually evidenced',
@@ -119,6 +120,21 @@ function websiteLine(lead) {
     audit.agencyCredit ? 'footer credits ' + audit.agencyCredit : null,
   ].filter(Boolean);
   return (lead.website_status || 'not checked yet') + (extra.length ? ' (' + extra.join('; ') + ')' : '');
+}
+
+/** Only a finished check may say "no app"; anything else is unknown. */
+function appLine(lead) {
+  const audit = asObject(lead.app_audit);
+  if (lead.app_status === 'no_app') {
+    return 'none - ' + (audit.summary || 'checked their site, Google Play and the App Store') + '. An app of their own is a fair pitch.';
+  }
+  if (lead.app_status === 'has_app' || lead.app_status === 'white_label') {
+    return (audit.summary || 'they have one') + '. Do NOT pitch them a first app.';
+  }
+  if (lead.app_status === 'unclear') {
+    return 'UNCLEAR - ' + (audit.summary || 'something app-shaped was found') + '. Ask, never claim they have none.';
+  }
+  return 'UNKNOWN - not checked. Do NOT claim they have no app.';
 }
 
 function instagramLine(lead, ig) {
@@ -300,6 +316,71 @@ export async function enrichSocial({ lead }) {
       linkedin_url: null, linkedin_followers: null, youtube_url: null, youtube_subscribers: null,
       years_in_business: null, founded_year: null, locations_count: null, evidence: null,
     }),
+  });
+}
+
+const APP_SHAPE = {
+  searched_google_play: 'true if you ran a search covering Google Play',
+  apps: [{
+    store: 'google_play or app_store',
+    title: 'the app name exactly as the listing shows it',
+    developer: 'the developer name as listed',
+    url: 'the play.google.com/store/apps/details?id=... or apps.apple.com URL you saw, copied exactly',
+    kind: 'own (published as this institute) or platform (a school ERP or white-label platform app its students or parents use)',
+    why: 'what ties it to this institute: same city or branch, linked from their website, their name in the listing',
+  }],
+  same_name_elsewhere: [{
+    store: 'google_play or app_store', title: 'app name', developer: 'developer name', url: 'store URL you saw',
+    why_unsure: 'why it may be a different institute',
+  }],
+  notes: 'one line, or null',
+};
+
+const APP_SYSTEM = [
+  'You check, with web search, whether one school, college, coaching class or preschool has a mobile app of its own.',
+  '',
+  'Rules:',
+  '1. Search first, every time. Which small institutes have apps is not in your memory - an answer you did not search for is a guess.',
+  '2. Only report an app you saw on a Google Play or App Store page, or on an app directory page that names its Play package (AppBrain, APKCombo, APKPure). Copy the store URL exactly. Never build a URL or a package id yourself.',
+  '3. An app belongs to this institute only if it is clearly the same one: the same name AND the same city or locality, or linked from their website, or its listing names their branch or address. A same-name app you cannot tie to them goes in same_name_elsewhere.',
+  '4. White-label apps built on Classplus, Teachmint, Graphy, Appx and similar platforms count as theirs - they are published under the institute\'s name. So does a school ERP app the school tells parents to use.',
+  '5. WhatsApp, Zoom, Google Classroom, Google Meet, DigiLocker and payment apps are not their app.',
+  '6. Empty lists are a valid and useful answer. Never return a phone number or an email address.',
+].join('\n');
+
+/**
+ * Google Play has no search API, so its listings are found through the
+ * provider's web search - with the searches spelt out, because a model left to
+ * itself answers from memory. The caller keeps only apps whose store id
+ * appears in a page the search returned (lib/appPresence.js).
+ */
+export async function appSearch({ lead }) {
+  const city = lead.locality || lead.region || '';
+  const where = [lead.locality, lead.region, lead.country_code].filter(Boolean).join(', ');
+  const q = '"' + lead.name + '"';
+  const user = [
+    'Find this institute\'s mobile app, if it has one:',
+    'Name: ' + lead.name,
+    'Type: ' + (lead.category || 'educational institute'),
+    'Location: ' + (where || lead.address || 'unknown'),
+    lead.address ? 'Address: ' + lead.address : '',
+    lead.website ? 'Their website: ' + lead.website : '',
+    '',
+    'Run these searches:',
+    '1. ' + q + ' site:play.google.com',
+    '2. ' + q + (city ? ' ' + city : '') + ' app',
+    '3. ' + q + ' site:apps.apple.com',
+    '',
+    'List every app that belongs to this institute. List same-name apps you could not tie to them separately.',
+  ].filter(Boolean).join('\n');
+
+  return generateGrounded({
+    system: APP_SYSTEM,
+    user,
+    shape: APP_SHAPE,
+    temperature: 0.1,
+    raw: true,
+    fallback: () => ({ searched_google_play: false, apps: [], same_name_elsewhere: [], notes: null }),
   });
 }
 

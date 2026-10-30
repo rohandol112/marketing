@@ -24,6 +24,15 @@ const QUEUES = {
     verifiable: true,
     approvable: true,
   },
+  apps: {
+    label: 'App pitch',
+    blurb:
+      'Schools, colleges, coaching classes and preschools with no app of their own - their site, Google Play and the ' +
+      'App Store were all checked, and a same-name app elsewhere keeps a lead out until someone looks. Their students ' +
+      'and parents get fees, results and notices over WhatsApp groups; an app with the institute\'s name on it is the pitch.',
+    params: { appPitch: 'true', status: 'pending_review', discoveryStatus: 'discovered,verifying,verified,qualified', sort: 'deal' },
+    approvable: true,
+  },
   enrich: {
     label: 'Needs data',
     blurb:
@@ -56,11 +65,29 @@ const QUEUES = {
   },
 };
 
+/** The app check's verdicts, as the App pitch queue's sub-filters. */
+const APP_FILTERS = [
+  ['no_app', 'No app'],
+  ['unclear', 'Possible app - check'],
+  ['unchecked', 'Not checked'],
+  ['has_app,white_label', 'Has an app'],
+];
+
+/** A queue's params, with the app filter applied in the App pitch queue. */
+function queueParams(key, appFilter) {
+  const p = QUEUES[key].params;
+  return key === 'apps' ? { ...p, appStatus: appFilter } : p;
+}
+
 export default function Review() {
   const app = useApp();
   const toast = useToast();
 
-  const [queue, setQueue] = useState('hot');
+  // /review?queue=apps opens straight on a queue, so a list can be linked to a rep.
+  const [queue, setQueue] = useState(() => {
+    const wanted = new URLSearchParams(window.location.search).get('queue');
+    return wanted && QUEUES[wanted] ? wanted : 'hot';
+  });
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(new Set());
@@ -72,6 +99,8 @@ export default function Review() {
   const [facets, setFacets] = useState(null);
   const [totalInQueue, setTotalInQueue] = useState(null);
   const [matchCount, setMatchCount] = useState(null);
+  const [appFilter, setAppFilter] = useState('no_app');
+  const [appSummary, setAppSummary] = useState(null);
 
   // Filtering happens in the database, not in the browser. With hundreds of
   // leads a client-side filter would be filtering whatever slice happened to
@@ -79,7 +108,7 @@ export default function Review() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const base = { ...QUEUES[queue].params, limit: 400 };
+      const base = { ...queueParams(queue, appFilter), limit: 400 };
       const active = Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== '' && v != null));
 
       // Counted, not listed: the badges used to be the length of a 400-row
@@ -88,8 +117,9 @@ export default function Review() {
         api.listLeads({ ...base, ...active }),
         api.leadFacets(base),
         api.leadCount({ ...base, ...active }),
-        ...Object.keys(QUEUES).map((k) => api.leadCount(QUEUES[k].params)),
+        ...Object.keys(QUEUES).map((k) => api.leadCount(queueParams(k, 'no_app'))),
       ]);
+      if (queue === 'apps') api.appSummary().then(setAppSummary).catch(() => {});
 
       setLeads(rows);
       setFacets(facetData);
@@ -101,7 +131,7 @@ export default function Review() {
       setCounts(c);
     } catch (e) { toast.error(e); }
     finally { setLoading(false); }
-  }, [queue, filters]);
+  }, [queue, filters, appFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -155,7 +185,7 @@ export default function Review() {
    */
   const exportCsv = () => {
     const params = new URLSearchParams({
-      ...QUEUES[queue].params,
+      ...queueParams(queue, appFilter),
       ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== '' && v != null)),
       limit: '50000',
     });
@@ -216,6 +246,22 @@ export default function Review() {
     } catch (e) { toast.error(e); } finally { setEnrichingSocial(false); }
   };
 
+  /**
+   * Check schools and coaching classes for an app: the selection, or the best
+   * unchecked ones. A free look at their site and the App Store, plus one
+   * billed Google Play search each, in the background.
+   */
+  const [checkingApps, setCheckingApps] = useState(false);
+  const checkApps = async () => {
+    setCheckingApps(true);
+    try {
+      const ids = selected.size ? [...selected] : undefined;
+      const r = await api.appCheckBulk({ ids, limit: ids ? ids.length : 100 });
+      toast.success(r.queued ? r.queued + ' app checks queued - about 15 seconds each. Refresh in a few minutes.' : r.note);
+      api.appSummary().then(setAppSummary).catch(() => {});
+    } catch (e) { toast.error(e); } finally { setCheckingApps(false); }
+  };
+
   const q = QUEUES[queue];
   const selectedLeads = visible.filter((l) => selected.has(l.id));
 
@@ -242,6 +288,12 @@ export default function Review() {
                 : 'Instagram handle and Facebook/LinkedIn pages via Google search - follower counts are rarely in search results'}
             >
               {enrichingSocial ? 'Queuing...' : 'Find social presence' + (selected.size ? ' (' + selected.size + ')' : '')}
+            </button>
+          )}
+          {queue === 'apps' && app.modes.appCheck && (
+            <button className="btn" onClick={checkApps} disabled={checkingApps} title="Their site, the App Store, and a cited Google Play search">
+              {checkingApps ? 'Queuing...' : selected.size ? 'Check ' + selected.size + ' for an app'
+                : 'Check for apps' + (appSummary?.counts?.unchecked ? ' (' + appSummary.counts.unchecked + ' unchecked)' : '')}
             </button>
           )}
           {queue === 'confirm' && visible.length > 0 && (
@@ -271,6 +323,28 @@ export default function Review() {
           </span>
         ))}
       </div>
+
+      {queue === 'apps' && (
+        <div className="row wrap" style={{ marginBottom: 14, gap: 6 }}>
+          {APP_FILTERS.map(([value, label]) => {
+            const n = appSummary?.counts
+              ? value.split(',').reduce((sum, s) => sum + (appSummary.counts[s] || 0), 0)
+              : null;
+            return (
+              <span key={value} className={'chip' + (appFilter === value ? ' on' : '')} onClick={() => setAppFilter(value)}>
+                {label}
+                {n != null && <span className="badge" style={{ padding: '0 6px' }}>{n}</span>}
+              </span>
+            );
+          })}
+          {appSummary?.queued > 0 && <span className="small muted" style={{ alignSelf: 'center' }}>{appSummary.queued} checks running</span>}
+          {app.modes.appCheck === false && (
+            <span className="small" style={{ alignSelf: 'center', color: 'var(--red)' }}>
+              The Google Play search needs OPENAI_API_KEY (or a working GEMINI_API_KEY) - app checks are off.
+            </span>
+          )}
+        </div>
+      )}
 
       <FilterBar
         facets={facets}
@@ -336,7 +410,11 @@ export default function Review() {
         <div className="empty">
           <h3>Nothing here</h3>
           <p>
-            {queue === 'hot'
+            {queue === 'apps'
+              ? (appFilter === 'no_app'
+                ? 'No school or coaching class has been confirmed app-less yet. Sweep "Schools and coaching (app pitch)" in Discovery, or press Check for apps - each lead is checked on its site, Google Play and the App Store.'
+                : 'Nothing in this group.')
+              : queue === 'hot'
               ? 'Nothing ready to close yet. Look up Google reviews for the "Needs data" queue, or sweep a high-value category - leads land here once they have a phone, real demand and a visible gap.'
               : queue === 'enrich'
               ? 'No leads waiting on data. Run a sweep in Discovery.'
@@ -404,7 +482,9 @@ export default function Review() {
                     </div>
                   </td>
                   <td className="small" style={{ maxWidth: 240 }}>
-                    {q.approvable ? (
+                    {queue === 'apps' ? (
+                      <AppPitchCell app={l.app} />
+                    ) : q.approvable ? (
                       <>
                         {l.pitch ? <div>{l.pitch}</div> : <div className="faint">{(l.deal?.reasons || [])[0] || '-'}</div>}
                         {l.package && (
@@ -439,5 +519,26 @@ export default function Review() {
         />
       )}
     </div>
+  );
+}
+
+/** The App pitch queue's pitch column: the line to open with, or what still needs a look. */
+function AppPitchCell({ app }) {
+  if (!app) return <span className="faint">Not checked yet</span>;
+  const link = (app.possible || [])[0] || (app.apps || [])[0];
+  return (
+    <>
+      <div>{app.line || app.summary || app.label}</div>
+      {app.line && app.summary && <div className="faint">{app.summary}</div>}
+      {!app.line && link?.url && (
+        <a className="small" href={link.url} target="_blank" rel="noreferrer">{(link.title || link.id) + ' - open it'}</a>
+      )}
+      {app.package && (
+        <div className="faint">
+          {app.package.name} · {money(app.package.priceMin, app.package.currency)}
+          {app.package.priceMax ? '–' + money(app.package.priceMax) : '+'}
+        </div>
+      )}
+    </>
   );
 }

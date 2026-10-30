@@ -156,6 +156,14 @@ export default function LeadDrawer({ leadId, onClose, onChanged }) {
                 describe={describeSocial}
               />
             )}
+            {app.modes.appCheck && (lead.app || (app.modes.appPitchCategories || []).includes(lead.normalized_category)) && (
+              <LookupButton
+                label={lead.app ? 'Check app again' : 'Check for an app'}
+                run={() => api.appCheck(lead.id)}
+                onDone={refresh}
+                describe={describeApp}
+              />
+            )}
           </div>
           {lead.phone && !lead.phone_normalized && (
             <div className="small" style={{ marginTop: 6, color: 'var(--red)' }}>
@@ -169,6 +177,7 @@ export default function LeadDrawer({ leadId, onClose, onChanged }) {
             <div className="callout good"><strong>Open with:</strong> {lead.pitch}</div>
           </div>
         )}
+        {lead.app && !lead.exclusionLabel && <AppBanner lead={lead} onDone={refresh} />}
         {lead.exclusionLabel && <ExclusionBanner lead={lead} onDone={refresh} />}
         {Object.keys(lead.candidates || {}).length > 0 && <Candidates lead={lead} onDone={refresh} />}
 
@@ -223,6 +232,66 @@ function describeSocial(r) {
   if (r.candidates && r.candidates.length) parts.push('check the found values below');
   if (r.instagram && r.instagram.found) parts.push(Number(r.instagram.followers || 0).toLocaleString() + ' followers from Instagram');
   return parts.length ? parts.join(' - ') + '.' : (r.reason || 'Nothing new found.');
+}
+
+function describeApp(r) {
+  if (typeof r.skipped === 'string') return r.skipped;
+  return (r.found ? { no_app: 'No app', has_app: 'Has an app', white_label: 'Rented app', unclear: 'Possible app' }[r.found] + ': ' : '') + r.summary;
+}
+
+const STORE_LABEL = { google_play: 'Google Play', app_store: 'App Store' };
+
+/**
+ * What the app check found. With no app, the pitch and the package; either
+ * way the links it found, and a person's word, which a later check never
+ * overwrites.
+ */
+function AppBanner({ lead, onDone }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const a = lead.app;
+  const tone = a.status === 'no_app' ? 'good' : a.status === 'has_app' || a.status === 'white_label' ? 'bad' : 'info';
+  const links = [...(a.apps || []), ...(a.possible || [])].filter((x) => x.url);
+  const mark = async (status) => {
+    setBusy(true);
+    try {
+      await api.patchLead(lead.id, { app_status: status });
+      toast.success(status === 'no_app' ? 'Marked as no app.' : 'Marked as having an app.');
+      await onDone();
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ padding: '10px 18px 0' }}>
+      <div className={'callout ' + tone}>
+        <div>
+          <strong>App: {a.label}</strong>
+          {a.byPerson && <span className="muted"> (a person checked)</span>}
+          {a.checkedAt && <span className="faint small"> · checked {a.checkedAt.slice(0, 10)}</span>}
+        </div>
+        {a.summary && <div className="small">{a.summary}</div>}
+        {a.line && <div style={{ marginTop: 4 }}><strong>Pitch:</strong> {a.line}</div>}
+        {a.package && (
+          <div className="small muted">
+            {a.package.name} · {money(a.package.priceMin, a.package.currency)}
+            {a.package.priceMax ? '–' + money(a.package.priceMax, a.package.currency) : '+'}
+          </div>
+        )}
+        {links.length > 0 && (
+          <div className="row wrap small" style={{ gap: 10, marginTop: 4 }}>
+            {links.map((x) => (
+              <a key={x.store + x.id} href={x.url} target="_blank" rel="noreferrer">
+                {(x.title || x.id) + ' (' + (STORE_LABEL[x.store] || 'store') + ')'}
+              </a>
+            ))}
+          </div>
+        )}
+        <div className="row wrap" style={{ gap: 6, marginTop: 6 }}>
+          {a.status !== 'no_app' && <button className="btn sm" disabled={busy} onClick={() => mark('no_app')}>I checked - no app</button>}
+          {a.status !== 'has_app' && <button className="btn sm" disabled={busy} onClick={() => mark('has_app')}>They have an app</button>}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function LookupButton({ label, run, onDone, describe }) {

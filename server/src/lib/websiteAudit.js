@@ -4,6 +4,7 @@ import zlib from 'node:zlib';
 import config from '../config.js';
 import { normalizeHost, normalizeUrl, cleanEmail, cleanInstagramHandle, phoneInfo } from './util.js';
 import { platformOf } from './classify.js';
+import { appsInHtml } from './appPresence.js';
 
 /**
  * Website auditor. Plain HTTP, no headless browser - a real browser buys very
@@ -35,7 +36,7 @@ const MAX_HTML = 600000;
 const TIMEOUT_MS = 12000;
 
 /** Bumped whenever the audit learns a signal. Scoring only trusts what this version measured. */
-export const AUDIT_VERSION = 2;
+export const AUDIT_VERSION = 3;
 
 /* ------------------------------------------------------------------ */
 /* Patterns                                                           */
@@ -445,6 +446,12 @@ export function analyzeHtml(html, { host = null, country = '', now = new Date(),
   audit.socials = extractSocials(raw);
   audit.socialLinkCount = SOCIAL_KEYS.filter((k) => audit.socials[k]).length;
   if (audit.socialLinkCount === 0) say(55, 'Site links to no social accounts at all');
+
+  /* ---- apps: the store links, smart banners and deep links on the page (v3) ---- */
+  audit.apps = appsInHtml(raw, text);
+  if (audit.apps.android.length || audit.apps.ios.length) {
+    say(5, 'The site links their own app on ' + [audit.apps.android.length && 'Google Play', audit.apps.ios.length && 'the App Store'].filter(Boolean).join(' and '));
+  }
 
   /* ---- freshness ---- */
   audit.copyrightYear = copyrightYear(text, thisYear);

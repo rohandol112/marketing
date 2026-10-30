@@ -21,6 +21,7 @@ import { thinkingFor } from './lib/mapsDiscovery.js';
 // Importing the services registers their queue handlers.
 import './services/discovery.js';
 import './services/enrichment.js';
+import './services/appCheck.js';
 import { startMaintenanceScheduler, stopMaintenanceScheduler } from './services/maintenance.js';
 
 import metaRoutes from './routes/meta.js';

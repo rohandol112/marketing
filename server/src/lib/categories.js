@@ -12,6 +12,10 @@
  * `q` is the text query sent to Places Text Search. `type` maps to the Places
  * `includedType` filter where a good one exists (it narrows results hard, so it
  * is left null when the official type is broader than what we actually want).
+ *
+ * `appPitch` marks the categories where "they have no app of their own" is a
+ * sale in itself - students and parents who get fees, results and notices over
+ * WhatsApp groups. Those leads are checked for an app (services/appCheck.js).
  */
 
 export const CATEGORIES = [
@@ -46,8 +50,12 @@ export const CATEGORIES = [
   { id: 'car_dealer', label: 'Car dealership', group: 'Automotive', tier: 'T1', q: 'car dealership showroom', type: 'car_dealer' },
   { id: 'law_firm', label: 'Law firm', group: 'Professional', tier: 'T1', q: 'law firm advocates', type: 'lawyer' },
   { id: 'wealth_management', label: 'Wealth management / financial advisor', group: 'Professional', tier: 'T1', q: 'financial advisor wealth management', type: null },
-  { id: 'private_school', label: 'Private school', group: 'Education', tier: 'T1', q: 'private school', type: 'school', season: [2, 3, 4] },
-  { id: 'college', label: 'College / institute', group: 'Education', tier: 'T1', q: 'college institute', type: null, season: [4, 5, 6] },
+  { id: 'private_school', label: 'Private school', group: 'Education', tier: 'T1', q: 'private school', type: 'school', season: [2, 3, 4], appPitch: true },
+  { id: 'college', label: 'College / institute', group: 'Education', tier: 'T1', q: 'college institute', type: null, season: [4, 5, 6], appPitch: true },
+  // JEE, NEET, UPSC, MPSC, CA and bank-exam coaching: hundreds of students at
+  // lakh-a-year fees, and test series and recorded lectures are the product -
+  // the institutes that most need an app of their own.
+  { id: 'exam_coaching', label: 'Competitive exam coaching', group: 'Education', tier: 'T1', q: 'JEE NEET UPSC MPSC competitive exam coaching institute', type: null, season: [3, 4, 5], appPitch: true },
 
   // ---------- T2: beauty + wellness ----------
   { id: 'salon', label: 'Salon', group: 'Beauty', tier: 'T2', q: 'hair salon', type: 'hair_salon' },
@@ -77,8 +85,8 @@ export const CATEGORIES = [
   { id: 'packers_movers', label: 'Packers and movers', group: 'Services', tier: 'T2', q: 'packers and movers', type: 'moving_company' },
   { id: 'travel_agency', label: 'Travel agency', group: 'Services', tier: 'T2', q: 'travel agency', type: 'travel_agency', season: [3, 4, 9] },
   { id: 'driving_school', label: 'Driving school', group: 'Education', tier: 'T2', q: 'driving school', type: null },
-  { id: 'coaching_institute', label: 'Coaching institute', group: 'Education', tier: 'T2', q: 'coaching classes institute', type: null, season: [3, 4, 5] },
-  { id: 'preschool', label: 'Preschool / daycare', group: 'Education', tier: 'T2', q: 'preschool daycare', type: 'preschool', season: [2, 3, 4] },
+  { id: 'coaching_institute', label: 'Coaching institute', group: 'Education', tier: 'T2', q: 'coaching classes institute', type: null, season: [3, 4, 5], appPitch: true },
+  { id: 'preschool', label: 'Preschool / daycare', group: 'Education', tier: 'T2', q: 'preschool daycare', type: 'preschool', season: [2, 3, 4], appPitch: true },
   { id: 'car_service', label: 'Car service centre', group: 'Automotive', tier: 'T2', q: 'car service centre', type: 'car_repair' },
   { id: 'pest_control', label: 'Pest control', group: 'Services', tier: 'T2', q: 'pest control service', type: null },
   { id: 'cleaning_service', label: 'Cleaning service', group: 'Services', tier: 'T2', q: 'cleaning service company', type: null },
@@ -115,6 +123,13 @@ export const CATEGORY_BY_ID = new Map(CATEGORIES.map((c) => [c.id, c]));
 
 export const GROUPS = [...new Set(CATEGORIES.map((c) => c.group))];
 
+/** Categories whose leads are checked for an app, and pitched one when they have none. */
+export const APP_PITCH_IDS = CATEGORIES.filter((c) => c.appPitch).map((c) => c.id);
+
+export function isAppPitch(categoryId) {
+  return Boolean(CATEGORY_BY_ID.get(categoryId)?.appPitch);
+}
+
 /** Sensible starting sweep: everything a full-service agency can actually sell into. */
 export const PRESETS = {
   high_value: {
@@ -136,6 +151,11 @@ export const PRESETS = {
     label: 'Weddings and events',
     note: 'Seasonal. Sweep 3 months before the local wedding season.',
     ids: CATEGORIES.filter((c) => c.group === 'Events' || c.id === 'jewellery_store' || c.id === 'resort').map((c) => c.id),
+  },
+  education_apps: {
+    label: 'Schools and coaching (app pitch)',
+    note: 'Schools, colleges, coaching classes and preschools. Each lead is checked for an app of its own.',
+    ids: CATEGORIES.filter((c) => c.appPitch).map((c) => c.id),
   },
   property: {
     label: 'Property and interiors',

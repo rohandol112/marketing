@@ -7,12 +7,14 @@ import {
 } from '../services/leads.js';
 import { auditLead, rescoreLead, queueMapsEnrichment, queueSocialEnrichment, refreshStaleLeads, tenantCountry } from '../services/discovery.js';
 import { enrichFromMaps, enrichSocialPresence } from '../services/enrichment.js';
+import { checkApp, queueAppChecks, appCheckSummary } from '../services/appCheck.js';
+import { appPitchLine, APP_STATUS_LABELS } from '../lib/appPresence.js';
 import { enqueue } from '../lib/queue.js';
 import { waLink, telLink, adLibraryLinks, whatsappNumber } from '../lib/wa.js';
 import { gapsFrom } from '../lib/scoring.js';
 import { recommendPackage, urgentIssue } from '../lib/deal.js';
 import { EXCLUSION_LABELS } from '../lib/classify.js';
-import { CATEGORIES } from '../lib/categories.js';
+import { CATEGORIES, APP_PITCH_IDS } from '../lib/categories.js';
 import { recordProvenance, DISCOVERY_META } from '../services/lifecycle.js';
 
 const app = new Hono();
@@ -81,6 +83,16 @@ function applyLeadFilters(query, q) {
   else if (q.exclusion) query = query.whereIn('leads.exclusion', q.exclusion.split(','));
   if (q.hasWebsite === 'true') query = query.whereNotNull('leads.website');
   if (q.hasWebsite === 'false') query = query.whereNull('leads.website');
+  // Schools, colleges, coaching classes and preschools, by what the app check found.
+  if (q.appPitch === 'true') query = query.whereIn('leads.normalized_category', APP_PITCH_IDS);
+  if (q.appStatus) {
+    const wanted = q.appStatus.split(',');
+    const real = wanted.filter((s) => s !== 'unchecked');
+    query = query.where((qb) => {
+      if (real.length) qb.whereIn('leads.app_status', real);
+      if (wanted.includes('unchecked')) qb.orWhereNull('leads.app_status');
+    });
+  }
   if (q.hasReviews === 'true') query = query.whereNotNull('leads.review_count');
   if (q.hasReviews === 'false') query = query.whereNull('leads.review_count');
   if (q.assigned === 'false') query = query.whereNull('leads.assigned_to');
@@ -180,6 +192,7 @@ function summarize(lead, sales = null) {
         }
       : null,
     pitch: urgentIssue(lead),
+    app: appView(lead, sales),
     exclusionLabel: lead.exclusion && lead.exclusion !== 'none' ? EXCLUSION_LABELS[lead.exclusion] || lead.exclusion : null,
     package: sales ? recommendPackage(lead, sales.packages, sales.catalog) : null,
     links: {
@@ -187,6 +200,27 @@ function summarize(lead, sales = null) {
       tel: telLink(lead.phone_normalized),
       ...adLibraryLinks(lead),
     },
+  };
+}
+
+/** What the app check found, and what to say about it. Null until it has run. */
+function appView(lead, sales) {
+  const audit = asObject(lead.app_audit);
+  if (!lead.app_status && !audit.checkedAt) return null;
+  const prov = asObject(lead.field_provenance).app_status;
+  return {
+    status: lead.app_status || null,
+    label: APP_STATUS_LABELS[lead.app_status] || 'Not settled yet',
+    summary: audit.summary || null,
+    checkedAt: audit.checkedAt || null,
+    byPerson: Boolean(prov && prov.source === 'human'),
+    apps: (audit.apps || []).slice(0, 3),
+    possible: (audit.possible || []).slice(0, 3),
+    checks: audit.checks || null,
+    line: appPitchLine(lead),
+    package: lead.app_status === 'no_app' && sales
+      ? recommendPackage(lead, sales.packages, sales.catalog, { only: ['no_app'] })
+      : null,
   };
 }
 
@@ -237,7 +271,7 @@ const CSV_COLUMNS = [
   'discovery_status', 'status', 'stage', 'assignee',
   'score', 'tier', 'confidence', 'confidence_level', 'deal_score', 'pitch',
   'review_count', 'rating', 'phone', 'phone_normalized', 'phone_type', 'email', 'website', 'website_status',
-  'exclusion', 'exclusion_reason',
+  'exclusion', 'exclusion_reason', 'app_status', 'app_summary', 'app_pitch',
   'ig_handle', 'ig_followers', 'li_followers', 'years_in_business', 'locations_count',
   'address', 'locality', 'region', 'postal_code', 'country_code', 'lat', 'lng',
   'external_source', 'external_id', 'google_place_id', 'maps_url',
@@ -270,6 +304,8 @@ export function leadsToCsv(rows) {
       gaps: gapsFrom(l.score_breakdown).slice(0, 3).join(' | '),
       missing_data: (conf.missing || []).slice(0, 4).map((m) => m.label).join(' | '),
       pitch: urgentIssue(l) || '',
+      app_summary: asObject(l.app_audit).summary || '',
+      app_pitch: appPitchLine(l) || '',
     };
     lines.push(CSV_COLUMNS.map((c) => csvCell(flat[c])).join(','));
   }
@@ -282,7 +318,7 @@ app.get('/export.csv', async (c) => {
     baseQuery(c).leftJoin('users', 'leads.assigned_to', 'users.id')
       .select('leads.*', 'users.name as assignee_name'),
     q
-  ).orderBy('leads.score', 'desc').limit(Number(q.limit || 50000));
+  ).orderBy(q.sort === 'deal' ? 'leads.deal_score' : 'leads.score', 'desc').limit(Number(q.limit || 50000));
 
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
   const name = 'leads-' + (q.discoveryStatus || 'all') + '-' + stamp + '.csv';
@@ -742,6 +778,41 @@ app.post('/enrich-social', async (c) => {
         ? 'Social presence lookups queued, best prospects first.'
         : 'Nothing to look up: these leads already have follower counts, were checked in the last 14 days, or are excluded.',
   });
+});
+
+/** Where the schools and coaching classes stand: how many have no app, how many are unchecked. */
+app.get('/apps/summary', async (c) => c.json(await appCheckSummary(c.get('tenantId'))));
+
+/**
+ * Queue app checks: the selection, or the best unchecked schools and coaching
+ * classes. Each is a free look at their site and the App Store plus one billed
+ * Google Play search.
+ */
+app.post('/app-check', async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const r = await queueAppChecks({
+    tenantId: c.get('tenantId'),
+    ids: Array.isArray(b.ids) ? b.ids : null,
+    limit: Math.min(Number(b.limit || 100), 500),
+    refresh: b.refresh === true,
+  });
+  return c.json({
+    queued: r.queued,
+    available: r.available,
+    note: !r.available
+      ? 'The app check needs web search: OPENAI_API_KEY with LLM_PROVIDER=openai, or a working GEMINI_API_KEY.'
+      : r.queued
+        ? 'App checks queued, best prospects first - about 15 seconds each.'
+        : 'Nothing to check: these were checked in the last 30 days, a person already answered, or they are excluded.',
+  });
+});
+
+app.post('/:id/app-check', async (c) => {
+  const lead = await knex('leads').where({ id: c.req.param('id'), tenant_id: c.get('tenantId') }).first('id');
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  const r = await checkApp({ leadId: lead.id, force: true });
+  const fresh = await knex('leads').where({ id: lead.id }).first();
+  return c.json({ ...r, lead: summarize(fresh) });
 });
 
 /** Accept or dismiss a value a lookup found but left for a person to confirm. */

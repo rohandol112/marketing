@@ -213,6 +213,7 @@ export function gapTagsFor(lead) {
   if (reviews !== null && followers >= 0 && reviews / Math.max(followers, 1) > 1) tags.add('high_review_ratio');
 
   if (lead.runs_ads === false || (audit.tracking && !audit.tracking.adTracking)) tags.add('no_ads');
+  if (lead.app_status === 'no_app') tags.add('no_app');
   return [...tags];
 }
 
@@ -221,9 +222,12 @@ export function gapTagsFor(lead) {
  * business: a big T1 gets the bigger package among equals, a small shop the
  * cheaper one. Built from the tenant's own packages and service catalogue, so
  * renaming a package in Settings changes nothing here.
+ *
+ * `only` narrows it to the gaps being pitched - the app list asks for the
+ * package that answers "no app", not the one that answers most gaps.
  */
-export function recommendPackage(lead, packages = [], catalog = []) {
-  const gaps = new Set(gapTagsFor(lead));
+export function recommendPackage(lead, packages = [], catalog = [], { only = null } = {}) {
+  const gaps = new Set(gapTagsFor(lead).filter((t) => !only || only.includes(t)));
   if (!gaps.size || !packages.length) return null;
 
   const serviceTags = new Map(catalog.map((s) => [String(s.name).toLowerCase(), asArray(s.gap_tags)]));

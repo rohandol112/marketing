@@ -97,6 +97,7 @@ const OSM_TAGS = {
   travel_agency: ['shop=travel_agency'],
   driving_school: ['amenity=driving_school'],
   coaching_institute: ['amenity=training', 'office=educational_institution'],
+  exam_coaching: ['amenity=training', 'office=educational_institution'],
   preschool: ['amenity=kindergarten'],
   car_service: ['shop=car_repair'],
   pest_control: ['craft=pest_control'],

@@ -49,6 +49,41 @@ Unverified facts (×0.6), an existing agency (×0.5) and a Google Ads tag (×0.8
 with the opening line under each name and the package that answers its gaps. It never qualifies
 anything - the gates above still decide what reaches a board.
 
+## The app pitch: schools and coaching classes with no app
+
+Schools, colleges, coaching classes (including JEE/NEET/UPSC/MPSC coaching) and preschools run on
+WhatsApp groups: notes, test results, fee reminders and circulars all go out there. An app with
+the institute's name on it is a sale in itself, so every lead in those categories gets an **app
+check**, and **Review queue → App pitch** lists the ones that have none, ranked by deal readiness,
+with the line to open with and the **Institute App** package priced next to it.
+
+"You have no app" said to an owner who has one ends the call, so `no_app` is the hardest verdict
+to earn. Three looks, cheapest first:
+
+| Look | How | Cost |
+|---|---|---|
+| Their own site | Play and App Store links, smart banners, app-link meta, deep links, and the `/.well-known/assetlinks.json` and `apple-app-site-association` files a domain publishes for its own apps. WhatsApp, Zoom, Google Classroom, DigiLocker and payment apps are ignored | Free (read off the website audit) |
+| The App Store | Apple's public search API. Their app when the seller website is their domain | Free, no key |
+| Google Play | No search API exists, so the AI provider's web search, with the searches spelt out. An app counts only if its store id appears in a page the search returned | One web search, ~15-20s |
+
+| Verdict | Means |
+|---|---|
+| `no_app` | Their site, a Google Play search that actually ran, and the App Store all came back empty |
+| `unclear` | A same-name app from another city, a site that says "download our app" and links none, or a course platform (Classplus, Graphy, Teachmint...) that ships apps. A person looks before anyone pitches |
+| `has_app` | Linked from their site, vouched for by their domain, or found and cited by the search |
+| `white_label` | Theirs, but rented: a Classplus-style package (`co.amy.qsrjk`) or a school ERP app. An upgrade pitch, not a first app |
+
+A failed or lazy search (the model answered without searching an app store) settles nothing: the
+lead stays unchecked and the job retries. A rep's "I checked - no app" or "They have an app" in the
+lead drawer is final; later checks refresh the evidence but never overwrite it. A confirmed
+`no_app` adds 4 points to the digital gap for these categories only, and the drafts are told the
+app status, with the same rule: unknown is never "they have no app".
+
+Checks run on their own after a sweep that includes these categories (`APP_CHECK_ON_DISCOVERY`,
+capped by `APP_CHECK_MAX_PER_RUN`), queued behind the site audits so they read a fresh one. **Check
+for apps** in the App pitch queue does the rest, or a selection. The **Schools and coaching (app
+pitch)** preset in Discovery sweeps all five categories.
+
 ## Who is never a prospect
 
 Some businesses score beautifully and will never sign, so they are excluded before scoring, each
@@ -382,15 +417,16 @@ server/
   migrations/          init · rls · confidence_and_lifecycle · external_id · … · lead_quality
   seeds/01_tanz.js     62 services from the service profile deck, 6 packages
   scripts/cleanup.js   the data cleanup, from the command line
-  src/lib/             scoring · confidence · deal · classify · categories(72) · places · osm
+  src/lib/             scoring · confidence · deal · classify · categories(73) · places · osm
                        mapsDiscovery · instagram · geminiDiscovery · llm · prompts · websiteAudit
+                       appPresence
                        queue · wa · geo(nominatim) · util
-  src/services/        discovery · enrichment · maintenance · lifecycle · leads · ai
+  src/services/        discovery · enrichment · appCheck · maintenance · lifecycle · leads · ai
   src/routes/          meta · discovery · leads · ai · analytics · settings
 web/src/pages/         Board · Review · Discovery · Analytics · Settings
 ```
 
-`npm test` in `server/` runs 121 tests: scoring and confidence, including hand-labelled fixtures
+`npm test` in `server/` runs 194 tests: scoring and confidence, including hand-labelled fixtures
 (Narenkumar, Mauli Garden, Tangent) that must always rank tier A - if a weight change breaks them,
 the weight change is wrong until closed-won data proves otherwise - plus phone parsing, exclusions,
 category sorting, the website auditor against a fake network, the Maps and Instagram lookups, the

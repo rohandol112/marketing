@@ -80,6 +80,9 @@ export const api = {
   setExclusion: (id, body) => request('/leads/' + id + '/exclusion', { method: 'POST', body }),
   resolveCandidate: (id, field, accept) => request('/leads/' + id + '/candidates/' + field, { method: 'POST', body: { accept } }),
   refreshStale: () => request('/leads/refresh-stale', { method: 'POST' }),
+  appCheck: (id) => request('/leads/' + id + '/app-check', { method: 'POST' }),
+  appCheckBulk: (body) => request('/leads/app-check', { method: 'POST', body }),
+  appSummary: () => request('/leads/apps/summary'),
 
   verifyByResearch: (id) => request('/ai/leads/' + id + '/verify-by-research', { method: 'POST' }),
   research: (id, force) => request('/ai/leads/' + id + '/research' + (force ? '?force=true' : '')),

@@ -82,7 +82,7 @@ const RETAIL_CATS = [
 ];
 const FOOD_CATS = ['restaurant', 'cafe', 'bakery', 'cloud_kitchen', 'caterer'];
 const HOTEL_CATS = ['hotel', 'resort', 'wedding_venue', 'banquet_hall', 'restaurant'];
-const EDU_CATS = ['preschool', 'coaching_institute', 'private_school', 'college', 'driving_school'];
+const EDU_CATS = ['preschool', 'coaching_institute', 'exam_coaching', 'private_school', 'college', 'driving_school'];
 const FINANCE_CATS = ['wealth_management', 'law_firm'];
 
 const CHAIN_GROUPS = [
@@ -149,6 +149,13 @@ const CHAIN_GROUPS = [
       'kidzee', 'eurokids', 'euro kids', 'little millennium', 'firstcry intellitots', 'shemrock', 'bachpan',
       'podar jumbo kids', 'allen career', 'aakash institute', 'aakash byjus', 'fiitjee', 'byjus',
       'vidyamandir classes', 'career launcher', 'ims learning',
+      // National coaching and preschool networks: their app and their
+      // marketing are bought at head office.
+      'pw vidyapeeth', 'physics wallah', 'resonance eduventures', 'motion education', 'narayana iit',
+      'sri chaitanya', 'unacademy centre', 'vedantu learning centre', 'vision ias',
+      'triumphant institute of management education', 'chate coaching', 'chate classes', 'mahesh tutorials',
+      'hello kids', 'kangaroo kids', 'tree house playgroup', 'mothers pride', 'little elly',
+      'orchids the international school',
     ],
   },
   {
