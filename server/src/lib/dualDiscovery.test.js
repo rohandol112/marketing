@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { withRetry, normalizeCandidates, mergeCandidates, discoverCombined } from './dualDiscovery.js';
 import config from '../config.js';
+import { callMaps } from './mapsDiscovery.js';
 
 test('503 retries exponentially, honors Retry-After, and never retries auth', async () => {
   const waits = []; let calls = 0;
@@ -122,4 +123,35 @@ test('malformed second-stage Gemini extraction warns and continues the cascade',
     assert.equal(r.leads.length, 1); assert.equal(r.leads[0].name, 'Clinic B');
     assert.match(r.warnings.join(' '), /invalid extraction/);
   } finally { globalThis.fetch = saved.fetch; Object.assign(config.combined, saved.combined); config.gemini.apiKey = saved.key; }
+});
+
+test('Gemini 503 fails over once per model and cooldown skips it on the next category', async () => {
+  const saved = { fetch: globalThis.fetch, combined: { ...config.combined }, key: config.gemini.apiKey };
+  config.combined.retries = 2; config.combined.mapsMcp = false; config.gemini.apiKey = 'test';
+  config.combined.geminiModels = ['overloaded-test-model', 'gemini-3.7-flash', 'unused-test-model'];
+  config.combined.thinking = 'medium';
+  const models = [];
+  globalThis.fetch = async (target, options) => {
+    if (String(target).includes('api.openai.com')) return { ok: true, json: async () => ({ status: 'completed', output: [{ type: 'message', content: [{ text: '{"businesses":[]}' }] }] }) };
+    const model = String(target).match(/models\/(.*):generateContent/)[1];
+    models.push(model);
+    if (model === 'overloaded-test-model') return { ok: false, status: 503, headers: new Headers(), text: async () => 'unavailable' };
+    assert.equal(JSON.parse(options.body).generationConfig.thinkingConfig.thinkingLevel, 'medium');
+    return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({ businesses: [{ name: 'Clinic A', phone: '9876543210', evidence: [{ field: 'phone', url: citation }] }] }) }] },
+      groundingMetadata: { groundingChunks: [{ web: { uri: citation } }] } }] }) };
+  };
+  try {
+    const first = await discoverCombined(args);
+    const second = await discoverCombined(args);
+    assert.deepEqual(models, ['overloaded-test-model', 'gemini-3.7-flash', 'gemini-3.7-flash']);
+    assert.equal(first.leads.length, 1); assert.equal(second.leads.length, 1);
+    assert.equal(first.calls, 3); assert.equal(second.calls, 2);
+    assert.match(second.warnings.join(' '), /cooldown/);
+  } finally { globalThis.fetch = saved.fetch; Object.assign(config.combined, saved.combined); config.gemini.apiKey = saved.key; }
+});
+
+test('Gemini transport preserves Retry-After for cascade scheduling', async () => {
+  await assert.rejects(callMaps({ model: 'test', system: 'test', user: 'test',
+    fetchImpl: async () => ({ ok: false, status: 429, headers: new Headers({ 'retry-after': '90' }), text: async () => 'temporary rate limit' }),
+  }), e => e.status === 429 && e.retryAfterMs === 90000);
 });

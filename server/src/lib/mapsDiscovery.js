@@ -103,10 +103,12 @@ export function thinkingFor(model, level = config.maps.thinkingLevel, explicit =
  * category would fail the same way - a refused key, a model that does not
  * exist, the day's quota gone - so the sweep stops and says why.
  */
-export function mapsError(status, text) {
+export function mapsError(status, text, retryAfter) {
   const summary = googleErrorSummary(status, text);
   const err = new Error('Maps grounding ' + summary);
   err.status = status;
+  const seconds = Number(retryAfter);
+  err.retryAfterMs = retryAfter ? (Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(retryAfter) - Date.now()) || 0) : 0;
   err.keyRefused = isKeyRefusal(status, text);
   err.dailyQuota = status === 429 && /PerDay/i.test(text);
   err.retryable = !err.dailyQuota && (status === 429 || status >= 500);
@@ -144,9 +146,9 @@ export async function callMaps({ model, system = SYSTEM, user, timeoutMs = 90000
       console.warn('[maps] ' + model + ' does not accept ' + JSON.stringify(thinking) + ' - using its default thinking');
       delete generationConfig.thinkingConfig;
       res = await post();
-      if (!res.ok) throw mapsError(res.status, await res.text().catch(() => ''));
+      if (!res.ok) throw mapsError(res.status, await res.text().catch(() => ''), res.headers?.get('retry-after'));
     } else {
-      throw mapsError(res.status, text);
+      throw mapsError(res.status, text, res.headers?.get('retry-after'));
     }
   }
   noteGeminiKey(true);
